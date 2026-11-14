@@ -18,4 +18,6 @@ it uses a peer-to-peer (P2P) connection using WebRTC and PeerJS to handle all of
 
 - Live Events – Build interactive events that players can experience together.
 
-- And More!
+- Host Dashboard - kick players and track bandwidth etc.
+
+- And more!
