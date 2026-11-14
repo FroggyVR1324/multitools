@@ -37,6 +37,7 @@
             this.soloLobbyTimer = null;
             this.migrationTimer = null;
             this.migrationInProgress = false;
+            this.isDisconnecting = false;
 
             this.dashboardElement = null;
             this.dashboardVisible = false;
@@ -325,6 +326,7 @@
 
         async createRoom(args) {
             await this.disconnect();
+            this.isDisconnecting = false;
 
             try {
                 await this.loadPeerJS();
@@ -377,6 +379,7 @@
 
         async joinRoom(args) {
             await this.disconnect();
+            this.isDisconnecting = false;
 
             try {
                 await this.loadPeerJS();
@@ -430,7 +433,7 @@
         }
 
         handleHostLost() {
-            if (this.migrationInProgress || !this.roomID || !this.peer) return;
+            if (this.isDisconnecting || this.migrationInProgress || !this.roomID || !this.peer) return;
             this.migrationInProgress = true;
             this.status = 'Host left — migrating room...';
             this.bandwidthBaselines.clear();
@@ -518,7 +521,10 @@
                     this.migrationTimer = setTimeout(attempt, 700);
                     return;
                 }
-                const connection = peer.connect('mt-room-' + roomID, {reliable: true});
+                const connection = peer.connect('mt-room-' + roomID, {
+                    reliable: true,
+                    metadata: {previousPlayerID: Number(this.myPlayerID)}
+                });
                 let settled = false;
                 connection.on('open', () => {
                     settled = true;
@@ -567,7 +573,11 @@
                 }
 
                 const peerID = connection.peer;
-                const playerID = this.getNextPlayerID();
+                const requestedPlayerID = Number(connection.metadata && connection.metadata.previousPlayerID);
+                const preferredPlayerID = requestedPlayerID > 2 ? requestedPlayerID - 1 : 0;
+                const playerID = preferredPlayerID > 1 && !this.playerIDToPeer.has(preferredPlayerID)
+                    ? preferredPlayerID
+                    : this.getNextPlayerID();
 
                 this.connections.set(peerID, connection);
                 this.peerToPlayerID.set(peerID, playerID);
@@ -1560,6 +1570,7 @@
         }
 
         disconnect() {
+            this.isDisconnecting = true;
             this.disablePositionSync();
 
             for (const remoteSprite of this.remoteSprites.values()) {
