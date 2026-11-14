@@ -373,7 +373,7 @@
                     this.updateSoloLobbyTimer();
                     this.updateDashboard();
                     this.startBandwidthMonitor();
-            this.startPingMonitor();
+                    this.startPingMonitor();
                     this.sendCurrentCostume();
                 });
 
@@ -426,7 +426,7 @@
                     connection.on('open', () => {
                         this.status = 'Connected';
                         this.startBandwidthMonitor();
-            this.startPingMonitor();
+                        this.startPingMonitor();
                         this.sendCurrentPosition();
                         this.sendCurrentCostume();
                     });
@@ -509,7 +509,7 @@
                     this.peerToPlayerID.set(id, 1);
                     this.playerIDToPeer.set(1, id);
                     this.startBandwidthMonitor();
-            this.startPingMonitor();
+                    this.startPingMonitor();
                     this.sendCurrentCostume();
                     this.updateSoloLobbyTimer();
                     this.updateDashboard();
@@ -560,7 +560,7 @@
                     this.status = 'Connected';
                     this.migrationInProgress = false;
                     this.startBandwidthMonitor();
-            this.startPingMonitor();
+                    this.startPingMonitor();
                     this.sendCurrentPosition();
                     this.sendCurrentCostume();
                     this.updateDashboard();
@@ -912,6 +912,7 @@
                     perPlayer.delete(Number(data.playerID));
                 }
                 this.positions.delete(Number(data.playerID));
+                this.pingValues.delete(Number(data.playerID));
                 this.costumes.delete(Number(data.playerID));
                 this.removeRemoteSprite(data.playerID);
                 return;
@@ -1825,8 +1826,6 @@
             this.pendingPings.clear();
             this.playerLists.clear();
             this.bandwidthBaselines.clear();
-            this.pingValues.clear();
-            this.pendingPings.clear();
             if (this.pingTimer) {
                 clearInterval(this.pingTimer);
                 this.pingTimer = null;
