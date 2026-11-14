@@ -17,7 +17,10 @@
 
             this.roomID = '';
             this.status = 'Disconnected';
+            this.peerID = '';
             this.myPlayerID = '';
+            this.peerToPlayerID = new Map();
+            this.playerIDToPeer = new Map();
 
             this.lastMessage = '';
             this.lastJoinedPlayerID = '';
@@ -213,8 +216,13 @@
                 });
 
                 this.peer.on('open', id => {
-                    this.myPlayerID = id;
-                    this.players.add(id);
+                    this.peerID = id;
+                    this.myPlayerID = 1;
+                    this.players = new Set([1]);
+                    this.peerToPlayerID.clear();
+                    this.playerIDToPeer.clear();
+                    this.peerToPlayerID.set(id, 1);
+                    this.playerIDToPeer.set(1, id);
                     this.status = 'Hosting';
                 });
 
@@ -250,7 +258,7 @@
                 });
 
                 this.peer.on('open', id => {
-                    this.myPlayerID = id;
+                    this.peerID = id;
 
                     const connection = this.peer.connect(
                         'mt-room-' + this.roomID,
@@ -287,14 +295,18 @@
 
         handleHostConnection(connection) {
             connection.on('open', () => {
-                const playerID = connection.peer;
+                const peerID = connection.peer;
+                const playerID = this.getNextPlayerID();
 
-                this.connections.set(playerID, connection);
+                this.connections.set(peerID, connection);
+                this.peerToPlayerID.set(peerID, playerID);
+                this.playerIDToPeer.set(playerID, peerID);
                 this.players.add(playerID);
 
                 connection.send({
                     type: 'welcome',
-                    hostID: this.myPlayerID,
+                    playerID: playerID,
+                    hostID: 1,
                     players: Array.from(this.players),
                     positions: Array.from(this.positions.entries())
                 });
@@ -305,7 +317,7 @@
                 this.broadcast({
                     type: 'playerJoined',
                     playerID: playerID
-                }, playerID);
+                }, peerID);
             });
 
             connection.on('data', data => {
@@ -313,21 +325,21 @@
             });
 
             connection.on('close', () => {
-                const playerID = connection.peer;
+                const peerID = connection.peer;
+                const playerID = this.peerToPlayerID.get(peerID);
 
-                this.connections.delete(playerID);
-                this.players.delete(playerID);
-                this.positions.delete(playerID);
+                this.connections.delete(peerID);
+                this.peerToPlayerID.delete(peerID);
+                if (playerID !== undefined) {
+                    this.playerIDToPeer.delete(playerID);
+                    this.players.delete(playerID);
+                    this.positions.delete(playerID);
 
-                this.broadcast({
-                    type: 'playerLeft',
-                    playerID: playerID
-                });
-
-                this.broadcast({
-                    type: 'removePosition',
-                    playerID: playerID
-                });
+                    this.broadcast({
+                        type: 'playerLeft',
+                        playerID: playerID
+                    });
+                }
             });
         }
 
@@ -335,10 +347,11 @@
             if (!data || typeof data !== 'object') return;
 
             if (data.type === 'welcome') {
+                this.myPlayerID = Number(data.playerID);
                 this.players = new Set(data.players || []);
                 this.players.add(this.myPlayerID);
 
-                if (data.hostID) this.players.add(data.hostID);
+                if (data.hostID) this.players.add(Number(data.hostID));
 
                 if (Array.isArray(data.positions)) {
                     data.positions.forEach(entry => {
@@ -371,8 +384,8 @@
 
             if (data.type === 'position') {
                 const playerID = senderID === 'Host'
-                    ? data.playerID
-                    : senderID;
+                    ? Number(data.playerID)
+                    : this.peerToPlayerID.get(senderID);
 
                 this.receivePosition(playerID, data.x, data.y);
 
@@ -390,8 +403,8 @@
             }
 
             if (data.type === 'playerJoined') {
-                this.players.add(data.playerID);
-                this.lastJoinedPlayerID = data.playerID;
+                this.players.add(Number(data.playerID));
+                this.lastJoinedPlayerID = Number(data.playerID);
 
                 this.runtime.startHats(
                     'multitools_whenPlayerJoins'
@@ -401,14 +414,20 @@
             }
 
             if (data.type === 'playerLeft') {
-                this.players.delete(data.playerID);
-                this.positions.delete(data.playerID);
+                this.players.delete(Number(data.playerID));
+                this.positions.delete(Number(data.playerID));
                 return;
             }
 
             if (data.type === 'removePosition') {
-                this.positions.delete(data.playerID);
+                this.positions.delete(Number(data.playerID));
             }
+        }
+
+        getNextPlayerID() {
+            let candidate = 2;
+            while (this.playerIDToPeer.has(candidate)) candidate++;
+            return candidate;
         }
 
         receivePosition(playerID, x, y) {
@@ -543,6 +562,8 @@
             this.connections.clear();
             this.players.clear();
             this.positions.clear();
+            this.peerToPlayerID.clear();
+            this.playerIDToPeer.clear();
 
             if (this.peer) {
                 try {
@@ -552,6 +573,7 @@
 
             this.peer = null;
             this.roomID = '';
+            this.peerID = '';
             this.myPlayerID = '';
             this.status = 'Disconnected';
 
@@ -588,12 +610,12 @@
         }
 
         getPlayerX(args) {
-            const position = this.positions.get(String(args.ID));
+            const position = this.positions.get(Number(args.ID));
             return position ? position.x : 0;
         }
 
         getPlayerY(args) {
-            const position = this.positions.get(String(args.ID));
+            const position = this.positions.get(Number(args.ID));
             return position ? position.y : 0;
         }
     }
