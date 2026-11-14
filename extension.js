@@ -678,16 +678,29 @@
             }
 
             if (data.type === 'welcome') {
+                const previousPlayerID = Number(this.myPlayerID);
                 this.myPlayerID = Number(data.playerID);
                 this.players = new Set(data.players || []);
                 this.players.add(this.myPlayerID);
 
                 if (data.hostID) this.players.add(Number(data.hostID));
 
+                // Keep this client's private list contents while its player ID changes.
+                for (const perPlayer of this.playerLists.values()) {
+                    const ownItems = perPlayer.get(previousPlayerID);
+                    if (Array.isArray(ownItems)) {
+                        perPlayer.clear();
+                        perPlayer.set(this.myPlayerID, ownItems.slice());
+                    }
+                }
+
                 if (data.playerLists && typeof data.playerLists === 'object') {
                     for (const [name, values] of Object.entries(data.playerLists)) {
                         if (Array.isArray(values)) {
-                            this.playerLists.set(name, new Map([[this.myPlayerID, values.slice(0, 100).map(String)]]));
+                            const existing = this.playerLists.get(name);
+                            const preserved = existing && existing.get(this.myPlayerID);
+                            const items = Array.isArray(preserved) ? preserved : values;
+                            this.playerLists.set(name, new Map([[this.myPlayerID, items.slice(0, 100).map(String)]]));
                         }
                     }
                 }
