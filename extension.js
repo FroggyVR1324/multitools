@@ -738,7 +738,7 @@
                             const id = entry[0];
                             const position = entry[1];
 
-                            this.receivePosition(id, position.x, position.y);
+                            this.receivePosition(id, position.x, position.y, position.direction);
                         }
                     });
                 }
@@ -830,7 +830,7 @@
                     ? Number(data.playerID)
                     : this.peerToPlayerID.get(senderID);
 
-                this.receivePosition(playerID, data.x, data.y);
+                this.receivePosition(playerID, data.x, data.y, data.direction);
 
                 // Relay client positions through the host.
                 if (this.status === 'Hosting') {
@@ -838,7 +838,8 @@
                         type: 'position',
                         playerID: playerID,
                         x: data.x,
-                        y: data.y
+                        y: data.y,
+                        direction: data.direction
                     }, senderID);
                 }
 
@@ -1112,7 +1113,7 @@
             }
         }
 
-        receivePosition(playerID, x, y) {
+        receivePosition(playerID, x, y, direction) {
             const numericID = Number(playerID);
             if (!Number.isFinite(numericID) || numericID <= 0) return;
             if (!Number.isFinite(Number(x)) ||
@@ -1122,6 +1123,9 @@
                 x: Number(x),
                 y: Number(y)
             };
+            if (Number.isFinite(Number(direction))) {
+                position.direction = Number(direction);
+            }
 
             this.positions.set(numericID, position);
             this.players.add(numericID);
@@ -1129,7 +1133,12 @@
 
             if (numericID !== Number(this.myPlayerID)) {
                 const remoteSprite = this.ensureRemoteSprite(numericID);
-                if (remoteSprite) remoteSprite.setXY(position.x, position.y);
+                if (remoteSprite) {
+                    remoteSprite.setXY(position.x, position.y);
+                    if (Number.isFinite(position.direction)) {
+                        remoteSprite.setDirection(position.direction);
+                    }
+                }
             }
 
             this.runtime.startHats(
@@ -1646,6 +1655,9 @@
                 const remoteSprite = this.ensureRemoteSprite(playerID);
                 if (remoteSprite) {
                     remoteSprite.setXY(position.x, position.y);
+                    if (Number.isFinite(position.direction)) {
+                        remoteSprite.setDirection(position.direction);
+                    }
                     this.applyRemoteCostume(playerID, remoteSprite);
                 }
             }
@@ -1755,29 +1767,32 @@
 
             const x = Number(this.syncTarget.x);
             const y = Number(this.syncTarget.y);
+            const direction = Number(this.syncTarget.direction);
 
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-            // Don't send unchanged coordinates.
+            // Send when position OR direction changes.
             if (
                 this.lastSentPosition &&
                 this.lastSentPosition.x === x &&
-                this.lastSentPosition.y === y
+                this.lastSentPosition.y === y &&
+                this.lastSentPosition.direction === direction
             ) {
                 return;
             }
 
-            this.lastSentPosition = { x, y };
+            this.lastSentPosition = { x, y, direction };
 
             const data = {
                 type: 'position',
                 playerID: this.myPlayerID,
                 x: x,
-                y: y
+                y: y,
+                direction: direction
             };
 
             if (this.status === 'Hosting') {
-                this.receivePosition(this.myPlayerID, x, y);
+                this.receivePosition(this.myPlayerID, x, y, direction);
                 this.broadcast(data);
             } else {
                 const host = this.connections.get('Host');
