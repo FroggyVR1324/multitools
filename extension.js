@@ -15,6 +15,8 @@
             this.players = new Set();
             this.positions = new Map();
             this.remoteSprites = new Map();
+            this.remoteSkinIds = new Map();
+            this.costumes = new Map();
 
             this.roomID = '';
             this.status = 'Disconnected';
@@ -30,6 +32,7 @@
             this.syncTarget = null;
             this.syncTimer = null;
             this.lastSentPosition = null;
+            this.lastSentCostumeKey = null;
             this.soloLobbyTimer = null;
 
             this.peerJSLoading = null;
@@ -227,6 +230,7 @@
                     this.playerIDToPeer.set(1, id);
                     this.status = 'Hosting';
                     this.updateSoloLobbyTimer();
+                    this.sendCurrentCostume();
                 });
 
                 this.peer.on('connection', connection => {
@@ -276,6 +280,8 @@
 
                     connection.on('open', () => {
                         this.status = 'Connected';
+                        this.sendCurrentPosition();
+                        this.sendCurrentCostume();
                     });
 
                     connection.on('data', data => {
@@ -318,6 +324,17 @@
                     players: Array.from(this.players),
                     positions: Array.from(this.positions.entries())
                 });
+
+                // Send the costume snapshots already known by the host.
+                for (const [costumePlayerID, costumeData] of this.costumes) {
+                    connection.send({
+                        type: 'costume',
+                        playerID: costumePlayerID,
+                        svg: costumeData.svg,
+                        rotationCenterX: costumeData.rotationCenterX,
+                        rotationCenterY: costumeData.rotationCenterY
+                    });
+                }
 
                 this.lastJoinedPlayerID = playerID;
                 this.runtime.startHats('multitools_whenPlayerJoins');
@@ -391,6 +408,32 @@
                 return;
             }
 
+            if (data.type === 'costume') {
+                const playerID = senderID === 'Host'
+                    ? Number(data.playerID)
+                    : this.peerToPlayerID.get(senderID);
+
+                this.receiveCostume(
+                    playerID,
+                    data.svg,
+                    data.rotationCenterX,
+                    data.rotationCenterY
+                );
+
+                // Relay client costume changes through the host.
+                if (this.status === 'Hosting') {
+                    this.broadcast({
+                        type: 'costume',
+                        playerID: playerID,
+                        svg: data.svg,
+                        rotationCenterX: data.rotationCenterX,
+                        rotationCenterY: data.rotationCenterY
+                    }, senderID);
+                }
+
+                return;
+            }
+
             if (data.type === 'position') {
                 const playerID = senderID === 'Host'
                     ? Number(data.playerID)
@@ -425,6 +468,7 @@
             if (data.type === 'playerLeft') {
                 this.players.delete(Number(data.playerID));
                 this.positions.delete(Number(data.playerID));
+                this.costumes.delete(Number(data.playerID));
                 this.removeRemoteSprite(data.playerID);
                 return;
             }
@@ -475,16 +519,62 @@
             this.runtime.addTarget(remoteSprite);
             remoteSprite.goBehindOther(this.syncTarget);
             this.remoteSprites.set(numericID, remoteSprite);
+            this.applyRemoteCostume(numericID, remoteSprite);
             return remoteSprite;
+        }
+
+        applyRemoteCostume(playerID, remoteSprite) {
+            const costumeData = this.costumes.get(Number(playerID));
+            if (!costumeData || !remoteSprite || !remoteSprite.drawableID) return;
+
+            const renderer = this.runtime.renderer;
+            if (!renderer || typeof renderer.createSVGSkin !== 'function') return;
+
+            const skinId = renderer.createSVGSkin(costumeData.svg, [
+                costumeData.rotationCenterX,
+                costumeData.rotationCenterY
+            ]);
+            if (skinId === null || skinId === undefined) return;
+
+            renderer.updateDrawableSkinId(remoteSprite.drawableID, skinId);
+            remoteSprite.emitVisualChange();
+            this.runtime.requestRedraw();
+
+            const oldSkinId = this.remoteSkinIds.get(Number(playerID));
+            this.remoteSkinIds.set(Number(playerID), skinId);
+            if (oldSkinId !== undefined) renderer.destroySkin(oldSkinId);
+        }
+
+        receiveCostume(playerID, svg, rotationCenterX, rotationCenterY) {
+            const numericID = Number(playerID);
+            if (!Number.isFinite(numericID) || numericID <= 0 ||
+                numericID === Number(this.myPlayerID)) return;
+            if (typeof svg !== 'string' || !svg.trim() || svg.length > 200000) return;
+
+            const costumeData = {
+                svg: svg,
+                rotationCenterX: Number.isFinite(Number(rotationCenterX)) ? Number(rotationCenterX) : 0,
+                rotationCenterY: Number.isFinite(Number(rotationCenterY)) ? Number(rotationCenterY) : 0
+            };
+            this.costumes.set(numericID, costumeData);
+
+            const remoteSprite = this.ensureRemoteSprite(numericID);
+            if (remoteSprite) this.applyRemoteCostume(numericID, remoteSprite);
         }
 
         removeRemoteSprite(playerID) {
             const numericID = Number(playerID);
             const remoteSprite = this.remoteSprites.get(numericID);
-            if (!remoteSprite) return;
+            if (remoteSprite) {
+                this.runtime.disposeTarget(remoteSprite);
+                this.remoteSprites.delete(numericID);
+            }
 
-            this.runtime.disposeTarget(remoteSprite);
-            this.remoteSprites.delete(numericID);
+            const skinId = this.remoteSkinIds.get(numericID);
+            if (skinId !== undefined) {
+                this.runtime.renderer.destroySkin(skinId);
+                this.remoteSkinIds.delete(numericID);
+            }
         }
 
         receivePosition(playerID, x, y) {
@@ -564,9 +654,11 @@
             // Send the sprite's position 20 times per second.
             this.syncTimer = setInterval(() => {
                 this.sendCurrentPosition();
+                this.sendCurrentCostume();
             }, 50);
 
             this.sendCurrentPosition();
+            this.sendCurrentCostume();
         }
 
         disablePositionSync() {
@@ -577,6 +669,47 @@
 
             this.syncTarget = null;
             this.lastSentPosition = null;
+            this.lastSentCostumeKey = null;
+        }
+
+        sendCurrentCostume() {
+            if (!this.syncTarget || !this.myPlayerID) return;
+            if (this.status !== 'Hosting' && this.status !== 'Connected') return;
+
+            const costume = this.syncTarget.sprite.costumes[this.syncTarget.currentCostume];
+            if (!costume || !costume.asset) return;
+            const format = String(costume.dataFormat || costume.asset.dataFormat || '').toLowerCase();
+            if (format !== 'svg') return;
+
+            const assetKey = costume.asset.assetId || costume.md5 || costume.name || '';
+            const costumeKey = `${this.syncTarget.currentCostume}:${assetKey}`;
+            if (costumeKey === this.lastSentCostumeKey) return;
+
+            let svg;
+            try {
+                svg = costume.asset.decodeText();
+            } catch (error) {
+                return;
+            }
+            if (typeof svg !== 'string' || !svg.trim() || svg.length > 200000) return;
+
+            const data = {
+                type: 'costume',
+                playerID: Number(this.myPlayerID),
+                svg: svg,
+                rotationCenterX: Number(costume.rotationCenterX) || 0,
+                rotationCenterY: Number(costume.rotationCenterY) || 0
+            };
+
+            this.lastSentCostumeKey = costumeKey;
+
+            if (this.status === 'Hosting') {
+                this.receiveCostume(this.myPlayerID, data.svg, data.rotationCenterX, data.rotationCenterY);
+                this.broadcast(data);
+            } else {
+                const host = this.connections.get('Host');
+                if (host && host.open) host.send(data);
+            }
         }
 
         sendCurrentPosition() {
@@ -627,6 +760,12 @@
                 this.runtime.disposeTarget(remoteSprite);
             }
             this.remoteSprites.clear();
+
+            for (const skinId of this.remoteSkinIds.values()) {
+                this.runtime.renderer.destroySkin(skinId);
+            }
+            this.remoteSkinIds.clear();
+            this.costumes.clear();
 
             if (this.soloLobbyTimer) {
                 clearTimeout(this.soloLobbyTimer);
