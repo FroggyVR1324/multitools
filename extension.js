@@ -332,6 +332,61 @@
                                 defaultValue: 'player ID'
                             }
                         }
+                    },
+                    {
+                        opcode: 'getBackdropNumber',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'backdrop number of [ID]',
+                        arguments: {
+                            ID: {
+                                type: Scratch.ArgumentType.STRING,
+                                defaultValue: 'player ID'
+                            }
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerDirection',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'player [ID] direction',
+                        arguments: {
+                            ID: {
+                                type: Scratch.ArgumentType.STRING,
+                                defaultValue: 'player ID'
+                            }
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerSize',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'player [ID] size',
+                        arguments: {
+                            ID: {
+                                type: Scratch.ArgumentType.STRING,
+                                defaultValue: 'player ID'
+                            }
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerVisible',
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: 'player [ID] sprite is visible?',
+                        arguments: {
+                            ID: {
+                                type: Scratch.ArgumentType.STRING,
+                                defaultValue: 'player ID'
+                            }
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerVisibleToOthers',
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: 'player [ID] visible to everyone else?',
+                        arguments: {
+                            ID: {
+                                type: Scratch.ArgumentType.STRING,
+                                defaultValue: 'player ID'
+                            }
+                        }
                     }
                 ]
             };
@@ -760,7 +815,7 @@
                             const id = entry[0];
                             const position = entry[1];
 
-                            this.receivePosition(id, position.x, position.y, position.direction, position.size, position.visible, position.visibleToOthers, position.backdrop);
+                            this.receivePosition(id, position.x, position.y, position.direction, position.size, position.visible, position.visibleToOthers, position.backdrop, position.backdropNumber);
                         }
                     });
                 }
@@ -852,7 +907,7 @@
                     ? Number(data.playerID)
                     : this.peerToPlayerID.get(senderID);
 
-                this.receivePosition(playerID, data.x, data.y, data.direction, data.size, data.visible, data.visibleToOthers, data.backdrop);
+                this.receivePosition(playerID, data.x, data.y, data.direction, data.size, data.visible, data.visibleToOthers, data.backdrop, data.backdropNumber);
 
                 // Relay client positions through the host.
                 if (this.status === 'Hosting') {
@@ -865,7 +920,8 @@
                         size: data.size,
                         visible: data.visible,
                         visibleToOthers: data.visibleToOthers,
-                        backdrop: data.backdrop
+                        backdrop: data.backdrop,
+                        backdropNumber: data.backdropNumber
                     }, senderID);
                 }
 
@@ -1148,7 +1204,16 @@
             return costume && costume.name ? String(costume.name) : '';
         }
 
-        receivePosition(playerID, x, y, direction, size, visible, visibleToOthers, backdrop) {
+        getCurrentBackdropNumber() {
+            const stage = this.runtime.getTargetForStage
+                ? this.runtime.getTargetForStage()
+                : this.runtime.targets.find(target => target.isStage);
+            return stage && Number.isInteger(stage.currentCostume)
+                ? stage.currentCostume + 1
+                : 0;
+        }
+
+        receivePosition(playerID, x, y, direction, size, visible, visibleToOthers, backdrop, backdropNumber) {
             const numericID = Number(playerID);
             if (!Number.isFinite(numericID) || numericID <= 0) return;
             if (!Number.isFinite(Number(x)) ||
@@ -1172,6 +1237,9 @@
             }
             if (typeof backdrop === 'string') {
                 position.backdrop = backdrop.slice(0, 128);
+            }
+            if (Number.isFinite(Number(backdropNumber))) {
+                position.backdropNumber = Number(backdropNumber);
             }
 
             this.positions.set(numericID, position);
@@ -1847,6 +1915,7 @@
             const visible = Boolean(this.syncTarget.visible);
             const visibleToOthers = this.showToOthers !== false;
             const backdrop = this.getCurrentBackdropName();
+            const backdropNumber = this.getCurrentBackdropNumber();
 
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
@@ -1859,12 +1928,13 @@
                 this.lastSentPosition.size === size &&
                 this.lastSentPosition.visible === visible &&
                 this.lastSentPosition.visibleToOthers === visibleToOthers &&
-                this.lastSentPosition.backdrop === backdrop
+                this.lastSentPosition.backdrop === backdrop &&
+                this.lastSentPosition.backdropNumber === backdropNumber
             ) {
                 return;
             }
 
-            this.lastSentPosition = { x, y, direction, size, visible, visibleToOthers, backdrop };
+            this.lastSentPosition = { x, y, direction, size, visible, visibleToOthers, backdrop, backdropNumber };
 
             const data = {
                 type: 'position',
@@ -1875,11 +1945,12 @@
                 size: size,
                 visible: visible,
                 visibleToOthers: visibleToOthers,
-                backdrop: backdrop
+                backdrop: backdrop,
+                backdropNumber: backdropNumber
             };
 
             if (this.status === 'Hosting') {
-                this.receivePosition(this.myPlayerID, x, y, direction, size, visible, visibleToOthers, backdrop);
+                this.receivePosition(this.myPlayerID, x, y, direction, size, visible, visibleToOthers, backdrop, backdropNumber);
                 this.broadcast(data);
             } else {
                 const host = this.connections.get('Host');
@@ -2005,6 +2076,37 @@
             return position && typeof position.backdrop === 'string'
                 ? position.backdrop
                 : '';
+        }
+
+        getBackdropNumber(args) {
+            const position = this.positions.get(Number(args.ID));
+            return position && Number.isFinite(position.backdropNumber)
+                ? position.backdropNumber
+                : 0;
+        }
+
+        getPlayerDirection(args) {
+            const position = this.positions.get(Number(args.ID));
+            return position && Number.isFinite(position.direction)
+                ? position.direction
+                : 0;
+        }
+
+        getPlayerSize(args) {
+            const position = this.positions.get(Number(args.ID));
+            return position && Number.isFinite(position.size)
+                ? position.size
+                : 0;
+        }
+
+        getPlayerVisible(args) {
+            const position = this.positions.get(Number(args.ID));
+            return position ? position.visible !== false : false;
+        }
+
+        getPlayerVisibleToOthers(args) {
+            const position = this.positions.get(Number(args.ID));
+            return position ? position.visibleToOthers !== false : false;
         }
     }
 
