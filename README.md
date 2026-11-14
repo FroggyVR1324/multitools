@@ -21,3 +21,5 @@ it uses a peer-to-peer (P2P) connection using WebRTC and PeerJS to handle all of
 - Host Dashboard - kick players and track bandwidth etc.
 
 - And more!
+
+Shout out to my homie king bob
