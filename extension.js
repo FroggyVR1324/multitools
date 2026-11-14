@@ -33,6 +33,7 @@
             this.syncTimer = null;
             this.lastSentPosition = null;
             this.lastSentCostumeKey = null;
+            this.showToOthers = true;
             this.costumeChangeHook = null;
             this.soloLobbyTimer = null;
             this.migrationTimer = null;
@@ -116,6 +117,16 @@
                         opcode: 'disablePositionSync',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'disable automatic position sync'
+                    },
+                    {
+                        opcode: 'hideMeForEveryoneElse',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'hide me for everyone else'
+                    },
+                    {
+                        opcode: 'showMeForEveryoneElse',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'show me for everyone else'
                     },
                     {
                         opcode: 'disconnect',
@@ -304,6 +315,17 @@
                         opcode: 'getPlayerY',
                         blockType: Scratch.BlockType.REPORTER,
                         text: 'player [ID] y position',
+                        arguments: {
+                            ID: {
+                                type: Scratch.ArgumentType.STRING,
+                                defaultValue: 'player ID'
+                            }
+                        }
+                    },
+                    {
+                        opcode: 'getBackdropName',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'backdrop name of [ID]',
                         arguments: {
                             ID: {
                                 type: Scratch.ArgumentType.STRING,
@@ -738,7 +760,7 @@
                             const id = entry[0];
                             const position = entry[1];
 
-                            this.receivePosition(id, position.x, position.y, position.direction, position.size, position.visible);
+                            this.receivePosition(id, position.x, position.y, position.direction, position.size, position.visible, position.visibleToOthers, position.backdrop);
                         }
                     });
                 }
@@ -830,7 +852,7 @@
                     ? Number(data.playerID)
                     : this.peerToPlayerID.get(senderID);
 
-                this.receivePosition(playerID, data.x, data.y, data.direction, data.size, data.visible);
+                this.receivePosition(playerID, data.x, data.y, data.direction, data.size, data.visible, data.visibleToOthers, data.backdrop);
 
                 // Relay client positions through the host.
                 if (this.status === 'Hosting') {
@@ -841,7 +863,9 @@
                         y: data.y,
                         direction: data.direction,
                         size: data.size,
-                        visible: data.visible
+                        visible: data.visible,
+                        visibleToOthers: data.visibleToOthers,
+                        backdrop: data.backdrop
                     }, senderID);
                 }
 
@@ -1115,7 +1139,16 @@
             }
         }
 
-        receivePosition(playerID, x, y, direction, size, visible) {
+        getCurrentBackdropName() {
+            const stage = this.runtime.getTargetForStage
+                ? this.runtime.getTargetForStage()
+                : this.runtime.targets.find(target => target.isStage);
+            if (!stage || !stage.sprite || !stage.sprite.costumes) return '';
+            const costume = stage.sprite.costumes[stage.currentCostume];
+            return costume && costume.name ? String(costume.name) : '';
+        }
+
+        receivePosition(playerID, x, y, direction, size, visible, visibleToOthers, backdrop) {
             const numericID = Number(playerID);
             if (!Number.isFinite(numericID) || numericID <= 0) return;
             if (!Number.isFinite(Number(x)) ||
@@ -1134,6 +1167,12 @@
             if (typeof visible === 'boolean') {
                 position.visible = visible;
             }
+            if (typeof visibleToOthers === 'boolean') {
+                position.visibleToOthers = visibleToOthers;
+            }
+            if (typeof backdrop === 'string') {
+                position.backdrop = backdrop.slice(0, 128);
+            }
 
             this.positions.set(numericID, position);
             this.players.add(numericID);
@@ -1151,6 +1190,9 @@
                     }
                     if (typeof position.visible === 'boolean') {
                         remoteSprite.visible = position.visible;
+                    }
+                    if (position.visibleToOthers === false) {
+                        remoteSprite.visible = false;
                     }
                 }
             }
@@ -1678,6 +1720,9 @@
                     if (typeof position.visible === 'boolean') {
                         remoteSprite.visible = position.visible;
                     }
+                    if (position.visibleToOthers === false) {
+                        remoteSprite.visible = false;
+                    }
                     this.applyRemoteCostume(playerID, remoteSprite);
                 }
             }
@@ -1693,6 +1738,16 @@
 
             this.sendCurrentPosition();
             this.sendCurrentCostume();
+        }
+
+        hideMeForEveryoneElse() {
+            this.showToOthers = false;
+            this.sendCurrentPosition();
+        }
+
+        showMeForEveryoneElse() {
+            this.showToOthers = true;
+            this.sendCurrentPosition();
         }
 
         disablePositionSync() {
@@ -1790,22 +1845,26 @@
             const direction = Number(this.syncTarget.direction);
             const size = Number(this.syncTarget.size);
             const visible = Boolean(this.syncTarget.visible);
+            const visibleToOthers = this.showToOthers !== false;
+            const backdrop = this.getCurrentBackdropName();
 
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-            // Send when position, direction, size, or visibility changes.
+            // Send when position, direction, size, visibility, or backdrop changes.
             if (
                 this.lastSentPosition &&
                 this.lastSentPosition.x === x &&
                 this.lastSentPosition.y === y &&
                 this.lastSentPosition.direction === direction &&
                 this.lastSentPosition.size === size &&
-                this.lastSentPosition.visible === visible
+                this.lastSentPosition.visible === visible &&
+                this.lastSentPosition.visibleToOthers === visibleToOthers &&
+                this.lastSentPosition.backdrop === backdrop
             ) {
                 return;
             }
 
-            this.lastSentPosition = { x, y, direction, size, visible };
+            this.lastSentPosition = { x, y, direction, size, visible, visibleToOthers, backdrop };
 
             const data = {
                 type: 'position',
@@ -1814,11 +1873,13 @@
                 y: y,
                 direction: direction,
                 size: size,
-                visible: visible
+                visible: visible,
+                visibleToOthers: visibleToOthers,
+                backdrop: backdrop
             };
 
             if (this.status === 'Hosting') {
-                this.receivePosition(this.myPlayerID, x, y, direction, size, visible);
+                this.receivePosition(this.myPlayerID, x, y, direction, size, visible, visibleToOthers, backdrop);
                 this.broadcast(data);
             } else {
                 const host = this.connections.get('Host');
@@ -1937,6 +1998,13 @@
         getPlayerY(args) {
             const position = this.positions.get(Number(args.ID));
             return position ? position.y : 0;
+        }
+
+        getBackdropName(args) {
+            const position = this.positions.get(Number(args.ID));
+            return position && typeof position.backdrop === 'string'
+                ? position.backdrop
+                : '';
         }
     }
 
