@@ -601,6 +601,11 @@
                 perPlayer.clear();
                 perPlayer.set(1, ownItems.slice());
             }
+            for (const perPlayer of this.playerVariables.values()) {
+                const ownValue = perPlayer.get(2);
+                perPlayer.clear();
+                if (ownValue !== undefined) perPlayer.set(1, ownValue);
+            }
             this.status = 'Becoming host...';
 
             const attempt = () => {
