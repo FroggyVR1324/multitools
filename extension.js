@@ -889,12 +889,10 @@
             };
 
             this.players = new Set(oldIDs.map(oldID => mapping[oldID]));
+            const previousPeerToPlayerID = new Map(this.peerToPlayerID);
             this.peerToPlayerID = new Map();
             this.playerIDToPeer = new Map();
-            for (const [peerID, oldID] of Array.from(this.connections.keys()).map(peerID => [
-                peerID,
-                this.peerToPlayerID.get(peerID)
-            ])) {
+            for (const [peerID, oldID] of previousPeerToPlayerID) {
                 const nextID = mapping[Number(oldID)];
                 if (nextID !== undefined) {
                     this.peerToPlayerID.set(peerID, nextID);
