@@ -29,7 +29,7 @@
 
             this.peerJSLoading = null;
         }
-
+        
         getInfo() {
             return {
                 id: 'multitools',
@@ -90,17 +90,17 @@
 
                     {
                         opcode: 'whenPlayerJoins',
-                        blockType: Scratch.BlockType.HAT,
+                       blockType: Scratch.BlockType.EVENT,
                         text: 'when player joins'
                     },
                     {
                         opcode: 'whenMessageReceived',
-                        blockType: Scratch.BlockType.HAT,
+                        blockType: Scratch.BlockType.EVENT,
                         text: 'when message received'
                     },
                     {
                         opcode: 'whenPlayerPositionUpdates',
-                        blockType: Scratch.BlockType.HAT,
+                        blockType: Scratch.BlockType.EVENT,
                         text: 'when player position updates'
                     },
 
