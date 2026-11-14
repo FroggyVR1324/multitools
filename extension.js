@@ -772,7 +772,8 @@
             shutdown.addEventListener('click', () => {
                 if (!window.confirm('Shut down this server and disconnect all players?')) return;
                 this.broadcast({type: 'serverShutdown'});
-                this.disconnect();
+                this.roomLocked = true;
+                setTimeout(() => this.disconnect(), 250);
             });
             panel.appendChild(shutdown);
 
@@ -1062,6 +1063,7 @@
             this.updateDashboard();
             this.myPlayerID = '';
             this.status = 'Disconnected';
+            this.updateDashboard();
 
             this.lastPositionPlayerID = '';
             this.lastJoinedPlayerID = '';
