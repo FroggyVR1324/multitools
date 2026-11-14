@@ -14,6 +14,7 @@
             this.connections = new Map();
             this.players = new Set();
             this.positions = new Map();
+            this.remoteSprites = new Map();
 
             this.roomID = '';
             this.status = 'Disconnected';
@@ -424,6 +425,7 @@
             if (data.type === 'playerLeft') {
                 this.players.delete(Number(data.playerID));
                 this.positions.delete(Number(data.playerID));
+                this.removeRemoteSprite(data.playerID);
                 return;
             }
 
@@ -457,8 +459,37 @@
             }, 60 * 1000);
         }
 
+        ensureRemoteSprite(playerID) {
+            const numericID = Number(playerID);
+            if (!Number.isFinite(numericID) || numericID <= 0 ||
+                numericID === Number(this.myPlayerID) || !this.syncTarget) return null;
+
+            let remoteSprite = this.remoteSprites.get(numericID);
+            if (remoteSprite && !remoteSprite.isDisposed) return remoteSprite;
+
+            // Use this project's synced sprite as the visual template for now.
+            remoteSprite = this.syncTarget.makeClone();
+            if (!remoteSprite) return null;
+
+            remoteSprite.visible = true;
+            this.runtime.addTarget(remoteSprite);
+            remoteSprite.goBehindOther(this.syncTarget);
+            this.remoteSprites.set(numericID, remoteSprite);
+            return remoteSprite;
+        }
+
+        removeRemoteSprite(playerID) {
+            const numericID = Number(playerID);
+            const remoteSprite = this.remoteSprites.get(numericID);
+            if (!remoteSprite) return;
+
+            this.runtime.disposeTarget(remoteSprite);
+            this.remoteSprites.delete(numericID);
+        }
+
         receivePosition(playerID, x, y) {
-            if (!playerID) return;
+            const numericID = Number(playerID);
+            if (!Number.isFinite(numericID) || numericID <= 0) return;
             if (!Number.isFinite(Number(x)) ||
                 !Number.isFinite(Number(y))) return;
 
@@ -467,9 +498,14 @@
                 y: Number(y)
             };
 
-            this.positions.set(playerID, position);
-            this.players.add(playerID);
-            this.lastPositionPlayerID = playerID;
+            this.positions.set(numericID, position);
+            this.players.add(numericID);
+            this.lastPositionPlayerID = numericID;
+
+            if (numericID !== Number(this.myPlayerID)) {
+                const remoteSprite = this.ensureRemoteSprite(numericID);
+                if (remoteSprite) remoteSprite.setXY(position.x, position.y);
+            }
 
             this.runtime.startHats(
                 'multitools_whenPlayerPositionUpdates'
@@ -513,6 +549,13 @@
             if (!util || !util.target || util.target.isStage) return;
 
             this.syncTarget = util.target;
+
+            // Recreate visible remote players after position sync is enabled.
+            for (const [playerID, position] of this.positions) {
+                if (Number(playerID) === Number(this.myPlayerID)) continue;
+                const remoteSprite = this.ensureRemoteSprite(playerID);
+                if (remoteSprite) remoteSprite.setXY(position.x, position.y);
+            }
 
             if (this.syncTimer) {
                 clearInterval(this.syncTimer);
@@ -579,6 +622,11 @@
 
         disconnect() {
             this.disablePositionSync();
+
+            for (const remoteSprite of this.remoteSprites.values()) {
+                this.runtime.disposeTarget(remoteSprite);
+            }
+            this.remoteSprites.clear();
 
             if (this.soloLobbyTimer) {
                 clearTimeout(this.soloLobbyTimer);
