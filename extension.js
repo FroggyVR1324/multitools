@@ -738,7 +738,7 @@
                             const id = entry[0];
                             const position = entry[1];
 
-                            this.receivePosition(id, position.x, position.y, position.direction);
+                            this.receivePosition(id, position.x, position.y, position.direction, position.size);
                         }
                     });
                 }
@@ -830,7 +830,7 @@
                     ? Number(data.playerID)
                     : this.peerToPlayerID.get(senderID);
 
-                this.receivePosition(playerID, data.x, data.y, data.direction);
+                this.receivePosition(playerID, data.x, data.y, data.direction, data.size);
 
                 // Relay client positions through the host.
                 if (this.status === 'Hosting') {
@@ -839,7 +839,8 @@
                         playerID: playerID,
                         x: data.x,
                         y: data.y,
-                        direction: data.direction
+                        direction: data.direction,
+                        size: data.size
                     }, senderID);
                 }
 
@@ -1113,7 +1114,7 @@
             }
         }
 
-        receivePosition(playerID, x, y, direction) {
+        receivePosition(playerID, x, y, direction, size) {
             const numericID = Number(playerID);
             if (!Number.isFinite(numericID) || numericID <= 0) return;
             if (!Number.isFinite(Number(x)) ||
@@ -1126,6 +1127,9 @@
             if (Number.isFinite(Number(direction))) {
                 position.direction = Number(direction);
             }
+            if (Number.isFinite(Number(size))) {
+                position.size = Number(size);
+            }
 
             this.positions.set(numericID, position);
             this.players.add(numericID);
@@ -1137,6 +1141,9 @@
                     remoteSprite.setXY(position.x, position.y);
                     if (Number.isFinite(position.direction)) {
                         remoteSprite.setDirection(position.direction);
+                    }
+                    if (Number.isFinite(position.size)) {
+                        remoteSprite.setSize(position.size);
                     }
                 }
             }
@@ -1658,6 +1665,9 @@
                     if (Number.isFinite(position.direction)) {
                         remoteSprite.setDirection(position.direction);
                     }
+                    if (Number.isFinite(position.size)) {
+                        remoteSprite.setSize(position.size);
+                    }
                     this.applyRemoteCostume(playerID, remoteSprite);
                 }
             }
@@ -1768,31 +1778,34 @@
             const x = Number(this.syncTarget.x);
             const y = Number(this.syncTarget.y);
             const direction = Number(this.syncTarget.direction);
+            const size = Number(this.syncTarget.size);
 
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
-            // Send when position OR direction changes.
+            // Send when position, direction, or size changes.
             if (
                 this.lastSentPosition &&
                 this.lastSentPosition.x === x &&
                 this.lastSentPosition.y === y &&
-                this.lastSentPosition.direction === direction
+                this.lastSentPosition.direction === direction &&
+                this.lastSentPosition.size === size
             ) {
                 return;
             }
 
-            this.lastSentPosition = { x, y, direction };
+            this.lastSentPosition = { x, y, direction, size };
 
             const data = {
                 type: 'position',
                 playerID: this.myPlayerID,
                 x: x,
                 y: y,
-                direction: direction
+                direction: direction,
+                size: size
             };
 
             if (this.status === 'Hosting') {
-                this.receivePosition(this.myPlayerID, x, y, direction);
+                this.receivePosition(this.myPlayerID, x, y, direction, size);
                 this.broadcast(data);
             } else {
                 const host = this.connections.get('Host');
