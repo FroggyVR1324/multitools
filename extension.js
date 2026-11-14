@@ -35,6 +35,8 @@
             this.lastSentCostumeKey = null;
             this.costumeChangeHook = null;
             this.soloLobbyTimer = null;
+            this.migrationTimer = null;
+            this.migrationInProgress = false;
 
             this.dashboardElement = null;
             this.dashboardVisible = false;
@@ -411,7 +413,7 @@
 
                     connection.on('close', () => {
                         this.connections.delete('Host');
-                        this.status = 'Disconnected';
+                        this.handleHostLost();
                     });
 
                     connection.on('error', error => {
@@ -425,6 +427,131 @@
             } catch (error) {
                 this.status = 'Error: ' + error.message;
             }
+        }
+
+        handleHostLost() {
+            if (this.migrationInProgress || !this.roomID || !this.peer) return;
+            this.migrationInProgress = true;
+            this.status = 'Host left — migrating room...';
+            this.bandwidthBaselines.clear();
+            if (this.bandwidthTimer) {
+                clearInterval(this.bandwidthTimer);
+                this.bandwidthTimer = null;
+            }
+            this.bandwidthSampling = false;
+
+            if (Number(this.myPlayerID) === 2) {
+                this.promoteToHost();
+            } else {
+                this.reconnectToMigratedHost();
+            }
+            this.updateDashboard();
+        }
+
+        promoteToHost() {
+            const roomID = this.roomID;
+            try { this.peer.destroy(); } catch (error) {}
+            this.peer = null;
+            this.connections.clear();
+            this.peerToPlayerID.clear();
+            this.playerIDToPeer.clear();
+            this.players = new Set([1]);
+            this.myPlayerID = 1;
+            this.peerID = '';
+            this.positions.clear();
+            this.costumes.clear();
+            for (const perPlayer of this.playerLists.values()) {
+                const ownItems = perPlayer.get(2) || [];
+                perPlayer.clear();
+                perPlayer.set(1, ownItems.slice());
+            }
+            this.status = 'Becoming host...';
+
+            const attempt = () => {
+                if (!this.migrationInProgress || this.roomID !== roomID) return;
+                const peer = new window.Peer('mt-room-' + roomID, {debug: 1});
+                this.peer = peer;
+                peer.on('open', id => {
+                    if (this.peer !== peer) return;
+                    this.peerID = id;
+                    this.status = 'Hosting';
+                    this.migrationInProgress = false;
+                    this.peerToPlayerID.set(id, 1);
+                    this.playerIDToPeer.set(1, id);
+                    this.startBandwidthMonitor();
+                    this.sendCurrentCostume();
+                    this.updateSoloLobbyTimer();
+                    this.updateDashboard();
+                });
+                peer.on('connection', connection => {
+                    if (this.peer === peer) this.handleHostConnection(connection);
+                });
+                peer.on('error', error => {
+                    if (this.peer !== peer || !this.migrationInProgress) return;
+                    if (error && error.type === 'unavailable-id') {
+                        try { peer.destroy(); } catch (destroyError) {}
+                        if (this.peer === peer) this.peer = null;
+                        this.migrationTimer = setTimeout(attempt, 700);
+                    } else {
+                        this.status = 'Host migration error: ' + (error && error.type || 'unknown');
+                        this.migrationTimer = setTimeout(attempt, 1500);
+                    }
+                    this.updateDashboard();
+                });
+            };
+
+            this.migrationTimer = setTimeout(attempt, 500);
+        }
+
+        reconnectToMigratedHost() {
+            const roomID = this.roomID;
+            const peer = this.peer;
+            if (!peer || peer.destroyed) {
+                this.status = 'Could not reconnect — host migration failed';
+                this.migrationInProgress = false;
+                return;
+            }
+
+            const attempt = () => {
+                if (!this.migrationInProgress || this.roomID !== roomID || this.peer !== peer) return;
+                if (peer.destroyed || !peer.open) {
+                    this.migrationTimer = setTimeout(attempt, 700);
+                    return;
+                }
+                const connection = peer.connect('mt-room-' + roomID, {reliable: true});
+                let settled = false;
+                connection.on('open', () => {
+                    settled = true;
+                    this.connections.set('Host', connection);
+                    this.status = 'Connected';
+                    this.migrationInProgress = false;
+                    this.startBandwidthMonitor();
+                    this.sendCurrentPosition();
+                    this.sendCurrentCostume();
+                    this.updateDashboard();
+                });
+                connection.on('data', data => this.handleData(data, 'Host'));
+                connection.on('close', () => {
+                    if (this.connections.get('Host') === connection) this.connections.delete('Host');
+                    if (!this.migrationInProgress && this.roomID === roomID) {
+                        this.migrationInProgress = true;
+                        this.reconnectToMigratedHost();
+                    }
+                });
+                connection.on('error', () => {
+                    if (!settled && this.migrationInProgress) {
+                        this.migrationTimer = setTimeout(attempt, 700);
+                    }
+                });
+                this.migrationTimer = setTimeout(() => {
+                    if (!settled && this.migrationInProgress) {
+                        try { connection.close(); } catch (error) {}
+                        attempt();
+                    }
+                }, 1200);
+            };
+
+            this.migrationTimer = setTimeout(attempt, 700);
         }
 
         handleHostConnection(connection) {
@@ -566,6 +693,17 @@
                     });
                 }
 
+                // Restore this player's own list data after reconnecting to a migrated host.
+                if (this.status === 'Connected') {
+                    const restoredLists = {};
+                    for (const [name, perPlayer] of this.playerLists) {
+                        const items = perPlayer.get(this.myPlayerID);
+                        if (Array.isArray(items)) restoredLists[name] = items.slice();
+                    }
+                    const host = this.connections.get('Host');
+                    if (host && host.open) host.send({type: 'playerListRestore', lists: restoredLists});
+                }
+
                 return;
             }
 
@@ -642,6 +780,20 @@
                 const name = String(data.name || '').slice(0, 64);
                 if (name && Array.isArray(data.items)) {
                     this.playerLists.set(name, new Map([[Number(this.myPlayerID), data.items.slice(0, 100).map(String)]]));
+                }
+                return;
+            }
+
+            if (data.type === 'playerListRestore' && this.status === 'Hosting') {
+                const playerID = this.peerToPlayerID.get(senderID);
+                if (playerID !== undefined && data.lists && typeof data.lists === 'object') {
+                    for (const [rawName, rawItems] of Object.entries(data.lists)) {
+                        const name = String(rawName).slice(0, 64);
+                        if (!name || !Array.isArray(rawItems)) continue;
+                        if (!this.playerLists.has(name)) this.playerLists.set(name, new Map());
+                        this.playerLists.get(name).set(playerID, rawItems.slice(0, 100).map(item => String(item).slice(0, 500)));
+                    }
+                    this.updateDashboard();
                 }
                 return;
             }
@@ -1425,6 +1577,11 @@
                 clearTimeout(this.soloLobbyTimer);
                 this.soloLobbyTimer = null;
             }
+            if (this.migrationTimer) {
+                clearTimeout(this.migrationTimer);
+                this.migrationTimer = null;
+            }
+            this.migrationInProgress = false;
 
             for (const connection of this.connections.values()) {
                 try {
