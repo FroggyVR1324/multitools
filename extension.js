@@ -1390,6 +1390,22 @@
                 : 0;
         }
 
+        setRemoteSpriteVisibility(remoteSprite, visible) {
+            if (!remoteSprite) return;
+            const isVisible = Boolean(visible);
+            remoteSprite.visible = isVisible;
+
+            const renderer = this.runtime && this.runtime.renderer;
+            if (renderer && remoteSprite.drawableID !== null &&
+                remoteSprite.drawableID !== undefined &&
+                typeof renderer.updateDrawableVisible === 'function') {
+                renderer.updateDrawableVisible(remoteSprite.drawableID, isVisible);
+                if (typeof this.runtime.requestRedraw === 'function') {
+                    this.runtime.requestRedraw();
+                }
+            }
+        }
+
         receivePlayerVisibility(playerID, visibleToOthers) {
             const numericID = Number(playerID);
             if (!Number.isFinite(numericID) || numericID <= 0 ||
@@ -1404,7 +1420,7 @@
                 const remoteSprite = this.ensureRemoteSprite(numericID);
                 if (remoteSprite) {
                     const baseVisible = typeof position.visible === 'boolean' ? position.visible : true;
-                    remoteSprite.visible = baseVisible && visibleToOthers;
+                    this.setRemoteSpriteVisibility(remoteSprite, baseVisible && visibleToOthers);
                 }
             }
         }
@@ -1452,12 +1468,9 @@
                     if (Number.isFinite(position.size)) {
                         remoteSprite.setSize(position.size);
                     }
-                    if (typeof position.visible === 'boolean') {
-                        remoteSprite.visible = position.visible;
-                    }
-                    if (position.visibleToOthers === false) {
-                        remoteSprite.visible = false;
-                    }
+                    const baseVisible = typeof position.visible === 'boolean' ? position.visible : true;
+                    const allowedForOthers = position.visibleToOthers !== false;
+                    this.setRemoteSpriteVisibility(remoteSprite, baseVisible && allowedForOthers);
                 }
             }
 
