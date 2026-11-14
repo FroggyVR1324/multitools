@@ -643,10 +643,7 @@
                     }
                     this.removeRemoteSprite(playerID);
 
-                    this.broadcast({
-                        type: 'playerLeft',
-                        playerID: playerID
-                    });
+                    this.renumberPlayers();
                 }
                 this.updateSoloLobbyTimer();
                 this.updateDashboard();
@@ -836,6 +833,11 @@
                 return;
             }
 
+            if (data.type === 'playerIDsUpdated') {
+                this.applyPlayerIDMap(data);
+                return;
+            }
+
             if (data.type === 'playerJoined') {
                 this.players.add(Number(data.playerID));
                 this.lastJoinedPlayerID = Number(data.playerID);
@@ -867,6 +869,97 @@
             let candidate = 2;
             while (this.playerIDToPeer.has(candidate)) candidate++;
             return candidate;
+        }
+
+        renumberPlayers() {
+            if (this.status !== 'Hosting') return;
+            const oldIDs = Array.from(this.players).map(Number).sort((a, b) => a - b);
+            const mapping = {};
+            oldIDs.forEach((oldID, index) => {
+                mapping[oldID] = index + 1;
+            });
+
+            const remapMap = source => {
+                const result = new Map();
+                for (const [oldID, value] of source) {
+                    const nextID = mapping[Number(oldID)];
+                    if (nextID !== undefined) result.set(nextID, value);
+                }
+                return result;
+            };
+
+            this.players = new Set(oldIDs.map(oldID => mapping[oldID]));
+            this.peerToPlayerID = new Map();
+            this.playerIDToPeer = new Map();
+            for (const [peerID, oldID] of Array.from(this.connections.keys()).map(peerID => [
+                peerID,
+                this.peerToPlayerID.get(peerID)
+            ])) {
+                const nextID = mapping[Number(oldID)];
+                if (nextID !== undefined) {
+                    this.peerToPlayerID.set(peerID, nextID);
+                    this.playerIDToPeer.set(nextID, peerID);
+                }
+            }
+
+            this.positions = remapMap(this.positions);
+            this.costumes = remapMap(this.costumes);
+            this.remoteSprites = remapMap(this.remoteSprites);
+            this.remoteSkinIds = remapMap(this.remoteSkinIds);
+            for (const [name, perPlayer] of this.playerLists) {
+                this.playerLists.set(name, remapMap(perPlayer));
+            }
+            this.myPlayerID = 1;
+
+            const update = {
+                type: 'playerIDsUpdated',
+                mapping: mapping,
+                players: Array.from(this.players)
+            };
+            for (const connection of this.connections.values()) {
+                if (connection.open) connection.send(update);
+            }
+            this.updateDashboard();
+        }
+
+        applyPlayerIDMap(data) {
+            if (!data.mapping || typeof data.mapping !== 'object') return;
+            const mapping = {};
+            for (const [oldID, newID] of Object.entries(data.mapping)) {
+                const oldNumber = Number(oldID);
+                const newNumber = Number(newID);
+                if (Number.isInteger(oldNumber) && Number.isInteger(newNumber)) {
+                    mapping[oldNumber] = newNumber;
+                }
+            }
+            const remapMap = source => {
+                const result = new Map();
+                for (const [oldID, value] of source) {
+                    const nextID = mapping[Number(oldID)];
+                    if (nextID !== undefined) result.set(nextID, value);
+                    else if (source === this.remoteSprites) this.runtime.disposeTarget(value);
+                    else if (source === this.remoteSkinIds) this.runtime.renderer.destroySkin(value);
+                }
+                return result;
+            };
+
+            const oldMyID = Number(this.myPlayerID);
+            if (mapping[oldMyID] !== undefined) this.myPlayerID = mapping[oldMyID];
+            this.players = new Set((data.players || []).map(Number));
+            this.positions = remapMap(this.positions);
+            this.costumes = remapMap(this.costumes);
+            this.remoteSprites = remapMap(this.remoteSprites);
+            this.remoteSkinIds = remapMap(this.remoteSkinIds);
+            for (const [name, perPlayer] of this.playerLists) {
+                this.playerLists.set(name, remapMap(perPlayer));
+            }
+            if (mapping[Number(this.lastJoinedPlayerID)] !== undefined) {
+                this.lastJoinedPlayerID = mapping[Number(this.lastJoinedPlayerID)];
+            }
+            if (mapping[Number(this.lastPositionPlayerID)] !== undefined) {
+                this.lastPositionPlayerID = mapping[Number(this.lastPositionPlayerID)];
+            }
+            this.updateDashboard();
         }
 
         updateSoloLobbyTimer() {
