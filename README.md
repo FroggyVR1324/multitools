@@ -3,9 +3,9 @@
 ![Status](https://img.shields.io/badge/status-development-orange)
 
 MultiTools is a custom [PenguinMod](https://penguinmod.com/) extension designed to help creating multiplayer projects
-it uses a peer-to-peer (P2P) connection using WebRTC to handle all of the networking. It offers a wide range of tools for making multiplayer projects more accesible to people who dont want to go through the struggle of cloud variables and whatnot.
+it uses a peer-to-peer (P2P) connection using WebRTC and PeerJS to handle all of the networking. It offers a wide range of tools for making multiplayer projects more accesible to people who dont want to go through the struggle of cloud variables and whatnot.
 
-# Features
+# Planned Features
 - P2P Multiplayer – Real-time peer-to-peer communication.
 
 - Room System – Create and join multiplayer rooms using IDs.
@@ -18,4 +18,4 @@ it uses a peer-to-peer (P2P) connection using WebRTC to handle all of the networ
 
 - Live Events – Build interactive events that players can experience together.
 
-And More!
+- And More!
