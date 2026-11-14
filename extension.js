@@ -33,6 +33,7 @@
             this.syncTimer = null;
             this.lastSentPosition = null;
             this.lastSentCostumeKey = null;
+            this.costumeChangeHook = null;
             this.soloLobbyTimer = null;
 
             this.peerJSLoading = null;
@@ -639,7 +640,9 @@
         enablePositionSync(args, util) {
             if (!util || !util.target || util.target.isStage) return;
 
+            this.removeCostumeChangeHook();
             this.syncTarget = util.target;
+            this.installCostumeChangeHook();
 
             // Recreate visible remote players after position sync is enabled.
             for (const [playerID, position] of this.positions) {
@@ -655,10 +658,9 @@
                 clearInterval(this.syncTimer);
             }
 
-            // Send the sprite's position 20 times per second.
+            // Position updates remain periodic; costume updates are event-driven.
             this.syncTimer = setInterval(() => {
                 this.sendCurrentPosition();
-                this.sendCurrentCostume();
             }, 50);
 
             this.sendCurrentPosition();
@@ -671,9 +673,42 @@
                 this.syncTimer = null;
             }
 
+            this.removeCostumeChangeHook();
             this.syncTarget = null;
             this.lastSentPosition = null;
             this.lastSentCostumeKey = null;
+        }
+
+        installCostumeChangeHook() {
+            if (!this.syncTarget || typeof this.syncTarget.setCostume !== 'function') return;
+
+            const target = this.syncTarget;
+            const originalSetCostume = target.setCostume;
+            const extension = this;
+
+            const hookedSetCostume = function (...args) {
+                const result = originalSetCostume.apply(this, args);
+                extension.sendCurrentCostume();
+                return result;
+            };
+
+            target.setCostume = hookedSetCostume;
+            this.costumeChangeHook = {
+                target: target,
+                original: originalSetCostume,
+                hooked: hookedSetCostume
+            };
+        }
+
+        removeCostumeChangeHook() {
+            const hook = this.costumeChangeHook;
+            if (!hook) return;
+
+            // Don't overwrite another extension's later wrapper.
+            if (hook.target.setCostume === hook.hooked) {
+                hook.target.setCostume = hook.original;
+            }
+            this.costumeChangeHook = null;
         }
 
         sendCurrentCostume() {
