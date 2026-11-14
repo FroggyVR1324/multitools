@@ -359,6 +359,8 @@
                     this.playerIDToPeer.delete(playerID);
                     this.players.delete(playerID);
                     this.positions.delete(playerID);
+                    this.costumes.delete(playerID);
+                    this.removeRemoteSprite(playerID);
 
                     this.broadcast({
                         type: 'playerLeft',
@@ -519,13 +521,12 @@
             this.runtime.addTarget(remoteSprite);
             remoteSprite.goBehindOther(this.syncTarget);
             this.remoteSprites.set(numericID, remoteSprite);
-            this.applyRemoteCostume(numericID, remoteSprite);
             return remoteSprite;
         }
 
         applyRemoteCostume(playerID, remoteSprite) {
             const costumeData = this.costumes.get(Number(playerID));
-            if (!costumeData || !remoteSprite || !remoteSprite.drawableID) return;
+            if (!costumeData || !remoteSprite || remoteSprite.drawableID === null || remoteSprite.drawableID === undefined) return;
 
             const renderer = this.runtime.renderer;
             if (!renderer || typeof renderer.createSVGSkin !== 'function') return;
@@ -547,8 +548,7 @@
 
         receiveCostume(playerID, svg, rotationCenterX, rotationCenterY) {
             const numericID = Number(playerID);
-            if (!Number.isFinite(numericID) || numericID <= 0 ||
-                numericID === Number(this.myPlayerID)) return;
+            if (!Number.isFinite(numericID) || numericID <= 0) return;
             if (typeof svg !== 'string' || !svg.trim() || svg.length > 200000) return;
 
             const costumeData = {
@@ -557,6 +557,7 @@
                 rotationCenterY: Number.isFinite(Number(rotationCenterY)) ? Number(rotationCenterY) : 0
             };
             this.costumes.set(numericID, costumeData);
+            if (numericID === Number(this.myPlayerID)) return;
 
             const remoteSprite = this.ensureRemoteSprite(numericID);
             if (remoteSprite) this.applyRemoteCostume(numericID, remoteSprite);
@@ -644,7 +645,10 @@
             for (const [playerID, position] of this.positions) {
                 if (Number(playerID) === Number(this.myPlayerID)) continue;
                 const remoteSprite = this.ensureRemoteSprite(playerID);
-                if (remoteSprite) remoteSprite.setXY(position.x, position.y);
+                if (remoteSprite) {
+                    remoteSprite.setXY(position.x, position.y);
+                    this.applyRemoteCostume(playerID, remoteSprite);
+                }
             }
 
             if (this.syncTimer) {
