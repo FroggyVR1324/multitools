@@ -90,20 +90,22 @@
 
                     {
                         opcode: 'whenPlayerJoins',
-                       blockType: Scratch.BlockType.EVENT,
-                        text: 'when player joins'
+                        blockType: Scratch.BlockType.EVENT,
+                        text: 'when player joins',
+                        isEdgeActivated: false
                     },
                     {
                         opcode: 'whenMessageReceived',
                         blockType: Scratch.BlockType.EVENT,
-                        text: 'when message received'
+                        text: 'when message received',
+                        isEdgeActivated: false
                     },
                     {
                         opcode: 'whenPlayerPositionUpdates',
                         blockType: Scratch.BlockType.EVENT,
-                        text: 'when player position updates'
+                        text: 'when player position updates',
+                        isEdgeActivated: false
                     },
-
                     {
                         opcode: 'getMessage',
                         blockType: Scratch.BlockType.REPORTER,
