@@ -48,6 +48,9 @@
             // Each named list stores a separate array for every player ID.
             this.playerLists = new Map();
 
+            // Each named player variable stores a value for every player ID.
+            this.playerVariables = new Map();
+
             // WebRTC transport counters (bytes) and one-second rate samples.
             this.bandwidthSent = 0;
             this.bandwidthReceived = 0;
@@ -142,6 +145,32 @@
                         opcode: 'hideDashboard',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'hide dashboard'
+                    },
+                    {
+                        opcode: 'setMyPlayerVariable',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'set my variable [NAME] to [VALUE]',
+                        arguments: {
+                            NAME: {type: Scratch.ArgumentType.STRING, defaultValue: 'health'},
+                            VALUE: {type: Scratch.ArgumentType.STRING, defaultValue: '100'}
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerVariable',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'player [PLAYER] variable [NAME]',
+                        arguments: {
+                            PLAYER: {type: Scratch.ArgumentType.NUMBER, defaultValue: 1},
+                            NAME: {type: Scratch.ArgumentType.STRING, defaultValue: 'health'}
+                        }
+                    },
+                    {
+                        opcode: 'deleteMyPlayerVariable',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'delete my variable [NAME]',
+                        arguments: {
+                            NAME: {type: Scratch.ArgumentType.STRING, defaultValue: 'health'}
+                        }
                     },
                     {
                         opcode: 'createPlayerList',
@@ -706,6 +735,12 @@
                             name,
                             (perPlayer.get(playerID) || []).slice()
                         ])
+                    ),
+                    playerVariables: Object.fromEntries(
+                        Array.from(this.playerVariables, ([name, perPlayer]) => [
+                            name,
+                            Object.fromEntries(perPlayer)
+                        ])
                     )
                 });
 
@@ -806,6 +841,20 @@
                             const items = Array.isArray(preserved) ? preserved : values;
                             this.playerLists.set(name, new Map([[this.myPlayerID, items.slice(0, 100).map(String)]]));
                         }
+                    }
+                }
+
+                if (data.playerVariables && typeof data.playerVariables === 'object') {
+                    this.playerVariables.clear();
+                    for (const [rawName, values] of Object.entries(data.playerVariables)) {
+                        const name = String(rawName).slice(0, 64);
+                        if (!name || !values || typeof values !== 'object') continue;
+                        const perPlayer = new Map();
+                        for (const [rawID, rawValue] of Object.entries(values)) {
+                            const id = Number(rawID);
+                            if (Number.isFinite(id)) perPlayer.set(id, String(rawValue).slice(0, 500));
+                        }
+                        this.playerVariables.set(name, perPlayer);
                     }
                 }
 
@@ -928,6 +977,53 @@
                 return;
             }
 
+            if (data.type === 'playerVariableUpdate' && this.status === 'Hosting') {
+                const playerID = this.peerToPlayerID.get(senderID);
+                const name = String(data.name || '').trim().slice(0, 64);
+                if (playerID !== undefined && name) {
+                    let perPlayer = this.playerVariables.get(name);
+                    if (!perPlayer) {
+                        perPlayer = new Map();
+                        this.playerVariables.set(name, perPlayer);
+                    }
+                    perPlayer.set(playerID, String(data.value === undefined ? '' : data.value).slice(0, 500));
+                    this.broadcast({type: 'playerVariableUpdate', playerID: playerID, name: name, value: perPlayer.get(playerID)});
+                }
+                return;
+            }
+
+            if (data.type === 'playerVariableDelete' && this.status === 'Hosting') {
+                const playerID = this.peerToPlayerID.get(senderID);
+                const name = String(data.name || '').trim().slice(0, 64);
+                const perPlayer = this.playerVariables.get(name);
+                if (playerID !== undefined && perPlayer) {
+                    perPlayer.delete(playerID);
+                    this.broadcast({type: 'playerVariableDelete', playerID: playerID, name: name});
+                }
+                return;
+            }
+
+            if (data.type === 'playerVariableUpdate') {
+                const name = String(data.name || '').trim().slice(0, 64);
+                const playerID = Number(data.playerID);
+                if (name && Number.isFinite(playerID)) {
+                    let perPlayer = this.playerVariables.get(name);
+                    if (!perPlayer) {
+                        perPlayer = new Map();
+                        this.playerVariables.set(name, perPlayer);
+                    }
+                    perPlayer.set(playerID, String(data.value === undefined ? '' : data.value).slice(0, 500));
+                }
+                return;
+            }
+
+            if (data.type === 'playerVariableDelete') {
+                const name = String(data.name || '').trim().slice(0, 64);
+                const perPlayer = this.playerVariables.get(name);
+                if (perPlayer) perPlayer.delete(Number(data.playerID));
+                return;
+            }
+
             if (data.type === 'playerListCreated') {
                 const name = String(data.name || '').slice(0, 64);
                 if (name && !this.playerLists.has(name)) {
@@ -992,6 +1088,9 @@
             if (data.type === 'playerLeft') {
                 this.players.delete(Number(data.playerID));
                 for (const perPlayer of this.playerLists.values()) {
+                    perPlayer.delete(Number(data.playerID));
+                }
+                for (const perPlayer of this.playerVariables.values()) {
                     perPlayer.delete(Number(data.playerID));
                 }
                 this.positions.delete(Number(data.playerID));
@@ -1515,6 +1614,44 @@
             setTimeout(() => {
                 try { connection.close(); } catch (error) {}
             }, 100);
+        }
+
+        setMyPlayerVariable(args) {
+            const name = String(args.NAME || '').trim().slice(0, 64);
+            if (!name || !this.myPlayerID || !['Hosting', 'Connected'].includes(this.status)) return;
+            const value = String(args.VALUE === undefined ? '' : args.VALUE).slice(0, 500);
+            let perPlayer = this.playerVariables.get(name);
+            if (!perPlayer) {
+                perPlayer = new Map();
+                this.playerVariables.set(name, perPlayer);
+            }
+            perPlayer.set(Number(this.myPlayerID), value);
+            if (this.status === 'Hosting') {
+                this.broadcast({type: 'playerVariableUpdate', playerID: Number(this.myPlayerID), name: name, value: value});
+            } else {
+                const host = this.connections.get('Host');
+                if (host && host.open) host.send({type: 'playerVariableUpdate', name: name, value: value});
+            }
+        }
+
+        getPlayerVariable(args) {
+            const name = String(args.NAME || '').trim().slice(0, 64);
+            const playerID = Math.floor(Number(args.PLAYER));
+            const perPlayer = this.playerVariables.get(name);
+            return perPlayer && perPlayer.has(playerID) ? perPlayer.get(playerID) : '';
+        }
+
+        deleteMyPlayerVariable(args) {
+            const name = String(args.NAME || '').trim().slice(0, 64);
+            if (!name || !this.myPlayerID || !['Hosting', 'Connected'].includes(this.status)) return;
+            const perPlayer = this.playerVariables.get(name);
+            if (perPlayer) perPlayer.delete(Number(this.myPlayerID));
+            if (this.status === 'Hosting') {
+                this.broadcast({type: 'playerVariableDelete', playerID: Number(this.myPlayerID), name: name});
+            } else {
+                const host = this.connections.get('Host');
+                if (host && host.open) host.send({type: 'playerVariableDelete', name: name});
+            }
         }
 
         createPlayerList(args) {
