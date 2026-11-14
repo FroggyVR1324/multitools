@@ -56,6 +56,12 @@
             this.bandwidthTimer = null;
             this.bandwidthSampling = false;
 
+            // Round-trip latency samples, keyed by player ID.
+            this.pingValues = new Map();
+            this.pendingPings = new Map();
+            this.pingTimer = null;
+            this.pingSequence = 0;
+
             this.peerJSLoading = null;
         }
         
@@ -218,6 +224,19 @@
                     },
 
                     {
+                        opcode: 'getPingToHost',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'ping to host (ms)'
+                    },
+                    {
+                        opcode: 'getPlayerPing',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'player [ID] ping (ms)',
+                        arguments: {
+                            ID: {type: Scratch.ArgumentType.NUMBER, defaultValue: 2}
+                        }
+                    },
+                    {
                         opcode: 'whenPlayerJoins',
                         blockType: Scratch.BlockType.EVENT,
                         text: 'when player joins',
@@ -354,6 +373,7 @@
                     this.updateSoloLobbyTimer();
                     this.updateDashboard();
                     this.startBandwidthMonitor();
+            this.startPingMonitor();
                     this.sendCurrentCostume();
                 });
 
@@ -406,6 +426,7 @@
                     connection.on('open', () => {
                         this.status = 'Connected';
                         this.startBandwidthMonitor();
+            this.startPingMonitor();
                         this.sendCurrentPosition();
                         this.sendCurrentCostume();
                     });
@@ -437,6 +458,12 @@
             this.migrationInProgress = true;
             this.status = 'Host left — migrating room...';
             this.bandwidthBaselines.clear();
+            this.pingValues.clear();
+            this.pendingPings.clear();
+            if (this.pingTimer) {
+                clearInterval(this.pingTimer);
+                this.pingTimer = null;
+            }
             if (this.bandwidthTimer) {
                 clearInterval(this.bandwidthTimer);
                 this.bandwidthTimer = null;
@@ -482,6 +509,7 @@
                     this.peerToPlayerID.set(id, 1);
                     this.playerIDToPeer.set(1, id);
                     this.startBandwidthMonitor();
+            this.startPingMonitor();
                     this.sendCurrentCostume();
                     this.updateSoloLobbyTimer();
                     this.updateDashboard();
@@ -532,6 +560,7 @@
                     this.status = 'Connected';
                     this.migrationInProgress = false;
                     this.startBandwidthMonitor();
+            this.startPingMonitor();
                     this.sendCurrentPosition();
                     this.sendCurrentCostume();
                     this.updateDashboard();
@@ -635,6 +664,7 @@
                 this.peerToPlayerID.delete(peerID);
                 if (playerID !== undefined) {
                     this.playerIDToPeer.delete(playerID);
+                    this.pingValues.delete(Number(playerID));
                     this.players.delete(playerID);
                     this.positions.delete(playerID);
                     this.costumes.delete(playerID);
@@ -724,6 +754,33 @@
                     if (host && host.open) host.send({type: 'playerListRestore', lists: restoredLists});
                 }
 
+                return;
+            }
+
+            if (data.type === 'ping') {
+                const connection = senderID === 'Host'
+                    ? this.connections.get('Host')
+                    : this.connections.get(senderID);
+                if (connection && connection.open) {
+                    connection.send({type: 'pong', id: data.id});
+                }
+                return;
+            }
+
+            if (data.type === 'pong') {
+                const id = String(data.id);
+                const pending = this.pendingPings.get(id);
+                const connection = senderID === 'Host'
+                    ? this.connections.get('Host')
+                    : this.connections.get(senderID);
+                if (pending && pending.connection === connection) {
+                    this.pendingPings.delete(id);
+                    this.pingValues.set(Number(pending.playerID), {
+                        ms: Math.max(0, Math.round(Date.now() - pending.sentAt)),
+                        updatedAt: Date.now()
+                    });
+                    this.updateDashboard();
+                }
                 return;
             }
 
@@ -901,6 +958,7 @@
             }
 
             this.positions = remapMap(this.positions);
+            this.pingValues = remapMap(this.pingValues);
             this.costumes = remapMap(this.costumes);
             this.remoteSprites = remapMap(this.remoteSprites);
             this.remoteSkinIds = remapMap(this.remoteSkinIds);
@@ -945,6 +1003,7 @@
             if (mapping[oldMyID] !== undefined) this.myPlayerID = mapping[oldMyID];
             this.players = new Set((data.players || []).map(Number));
             this.positions = remapMap(this.positions);
+            this.pingValues = remapMap(this.pingValues);
             this.costumes = remapMap(this.costumes);
             this.remoteSprites = remapMap(this.remoteSprites);
             this.remoteSkinIds = remapMap(this.remoteSkinIds);
@@ -1277,7 +1336,12 @@
                     const row = document.createElement('div');
                     row.className = 'mt-row mt-player';
                     const name = document.createElement('span');
-                    name.textContent = 'Player ' + playerID + (Number(playerID) === 1 ? ' (Host)' : '');
+                    const ping = this.pingValues.get(Number(playerID));
+                    const pingFresh = ping && Date.now() - ping.updatedAt <= 6000;
+                    const pingLabel = Number(playerID) === 1
+                        ? ' • Local host'
+                        : ' • ' + (pingFresh ? ping.ms + ' ms' : 'Ping: —');
+                    name.textContent = 'Player ' + playerID + (Number(playerID) === 1 ? ' (Host)' : '') + pingLabel;
                     row.appendChild(name);
                     if (Number(playerID) !== 1) {
                         const kick = document.createElement('button');
@@ -1409,6 +1473,56 @@
             const perPlayer = this.playerLists.get(String(args.LIST));
             const items = perPlayer && perPlayer.get(Number(args.PLAYER));
             return items ? JSON.stringify(items) : '[]';
+        }
+
+        startPingMonitor() {
+            if (this.pingTimer) return;
+            const sendPings = () => {
+                if (this.status === 'Hosting') {
+                    for (const [peerID, connection] of this.connections) {
+                        const playerID = this.peerToPlayerID.get(peerID);
+                        if (playerID !== undefined) this.sendPing(connection, playerID);
+                    }
+                } else if (this.status === 'Connected') {
+                    const host = this.connections.get('Host');
+                    if (host) this.sendPing(host, 1);
+                }
+                const now = Date.now();
+                for (const [id, pending] of this.pendingPings) {
+                    if (now - pending.sentAt > 10000) this.pendingPings.delete(id);
+                }
+                for (const [playerID, sample] of this.pingValues) {
+                    if (now - sample.updatedAt > 6000) this.pingValues.delete(playerID);
+                }
+                this.updateDashboard();
+            };
+            sendPings();
+            this.pingTimer = setInterval(sendPings, 2000);
+        }
+
+        sendPing(connection, playerID) {
+            if (!connection || !connection.open) return;
+            for (const pending of this.pendingPings.values()) {
+                if (pending.connection === connection) return;
+            }
+            const id = String(++this.pingSequence);
+            this.pendingPings.set(id, {connection: connection, playerID: Number(playerID), sentAt: Date.now()});
+            try {
+                connection.send({type: 'ping', id: id});
+            } catch (error) {
+                this.pendingPings.delete(id);
+            }
+        }
+
+        getPingToHost() {
+            if (this.status === 'Hosting') return 0;
+            const sample = this.pingValues.get(1);
+            return sample && Date.now() - sample.updatedAt <= 6000 ? sample.ms : 0;
+        }
+
+        getPlayerPing(args) {
+            const sample = this.pingValues.get(Number(args.ID));
+            return sample && Date.now() - sample.updatedAt <= 6000 ? sample.ms : 0;
         }
 
         startBandwidthMonitor() {
@@ -1707,8 +1821,16 @@
             this.connections.clear();
             this.players.clear();
             this.positions.clear();
+            this.pingValues.clear();
+            this.pendingPings.clear();
             this.playerLists.clear();
             this.bandwidthBaselines.clear();
+            this.pingValues.clear();
+            this.pendingPings.clear();
+            if (this.pingTimer) {
+                clearInterval(this.pingTimer);
+                this.pingTimer = null;
+            }
             if (this.bandwidthTimer) {
                 clearInterval(this.bandwidthTimer);
                 this.bandwidthTimer = null;
