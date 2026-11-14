@@ -29,6 +29,7 @@
             this.syncTarget = null;
             this.syncTimer = null;
             this.lastSentPosition = null;
+            this.soloLobbyTimer = null;
 
             this.peerJSLoading = null;
         }
@@ -224,6 +225,7 @@
                     this.peerToPlayerID.set(id, 1);
                     this.playerIDToPeer.set(1, id);
                     this.status = 'Hosting';
+                    this.updateSoloLobbyTimer();
                 });
 
                 this.peer.on('connection', connection => {
@@ -302,6 +304,7 @@
                 this.peerToPlayerID.set(peerID, playerID);
                 this.playerIDToPeer.set(playerID, peerID);
                 this.players.add(playerID);
+                this.updateSoloLobbyTimer();
 
                 connection.send({
                     type: 'welcome',
@@ -340,6 +343,7 @@
                         playerID: playerID
                     });
                 }
+                this.updateSoloLobbyTimer();
             });
         }
 
@@ -428,6 +432,25 @@
             let candidate = 2;
             while (this.playerIDToPeer.has(candidate)) candidate++;
             return candidate;
+        }
+
+        updateSoloLobbyTimer() {
+            if (this.soloLobbyTimer) {
+                clearTimeout(this.soloLobbyTimer);
+                this.soloLobbyTimer = null;
+            }
+
+            // Only the host controls the lifetime of the room.
+            if (this.status !== 'Hosting' || this.players.size !== 1) return;
+
+            this.soloLobbyTimer = setTimeout(() => {
+                this.soloLobbyTimer = null;
+
+                if (this.status === 'Hosting' && this.players.size === 1) {
+                    this.disconnect();
+                    this.status = 'Lobby closed: alone for 1 minute';
+                }
+            }, 60 * 1000);
         }
 
         receivePosition(playerID, x, y) {
@@ -552,6 +575,11 @@
 
         disconnect() {
             this.disablePositionSync();
+
+            if (this.soloLobbyTimer) {
+                clearTimeout(this.soloLobbyTimer);
+                this.soloLobbyTimer = null;
+            }
 
             for (const connection of this.connections.values()) {
                 try {
