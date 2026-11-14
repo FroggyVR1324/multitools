@@ -1014,14 +1014,14 @@
                     ? Number(data.playerID)
                     : this.peerToPlayerID.get(senderID);
 
-                if (playerID !== undefined && Number.isFinite(Number(playerID)) &&
-                    typeof data.visibleToOthers === 'boolean') {
-                    this.receivePlayerVisibility(playerID, data.visibleToOthers);
+                if (playerID !== undefined && Number.isFinite(Number(playerID))) {
+                    this.receivePlayerVisibility(playerID, data.visible, data.visibleToOthers);
 
                     if (this.status === 'Hosting') {
                         this.broadcast({
                             type: 'playerVisibility',
                             playerID: Number(playerID),
+                            visible: data.visible,
                             visibleToOthers: data.visibleToOthers
                         }, senderID);
                     }
@@ -1393,26 +1393,32 @@
         setRemoteSpriteVisibility(remoteSprite, visible) {
             if (!remoteSprite) return;
             const isVisible = Boolean(visible);
-            remoteSprite.visible = isVisible;
 
-            const renderer = this.runtime && this.runtime.renderer;
-            if (renderer && remoteSprite.drawableID !== null &&
-                remoteSprite.drawableID !== undefined &&
-                typeof renderer.updateDrawableVisible === 'function') {
-                renderer.updateDrawableVisible(remoteSprite.drawableID, isVisible);
-                if (typeof this.runtime.requestRedraw === 'function') {
-                    this.runtime.requestRedraw();
+            // RenderedTarget.setVisible updates both VM state and its renderer drawable.
+            if (typeof remoteSprite.setVisible === 'function') {
+                remoteSprite.setVisible(isVisible);
+            } else {
+                remoteSprite.visible = isVisible;
+                const renderer = this.runtime && this.runtime.renderer;
+                if (renderer && remoteSprite.drawableID !== null &&
+                    remoteSprite.drawableID !== undefined &&
+                    typeof renderer.updateDrawableVisible === 'function') {
+                    renderer.updateDrawableVisible(remoteSprite.drawableID, isVisible);
                 }
+            }
+
+            if (this.runtime && typeof this.runtime.requestRedraw === 'function') {
+                this.runtime.requestRedraw();
             }
         }
 
-        receivePlayerVisibility(playerID, visibleToOthers) {
+        receivePlayerVisibility(playerID, visible, visibleToOthers) {
             const numericID = Number(playerID);
-            if (!Number.isFinite(numericID) || numericID <= 0 ||
-                typeof visibleToOthers !== 'boolean') return;
+            if (!Number.isFinite(numericID) || numericID <= 0) return;
 
             const position = this.positions.get(numericID) || {x: 0, y: 0};
-            position.visibleToOthers = visibleToOthers;
+            if (typeof visible === 'boolean') position.visible = visible;
+            if (typeof visibleToOthers === 'boolean') position.visibleToOthers = visibleToOthers;
             this.positions.set(numericID, position);
             this.players.add(numericID);
 
@@ -1420,7 +1426,8 @@
                 const remoteSprite = this.ensureRemoteSprite(numericID);
                 if (remoteSprite) {
                     const baseVisible = typeof position.visible === 'boolean' ? position.visible : true;
-                    this.setRemoteSpriteVisibility(remoteSprite, baseVisible && visibleToOthers);
+                    const allowedForOthers = position.visibleToOthers !== false;
+                    this.setRemoteSpriteVisibility(remoteSprite, baseVisible && allowedForOthers);
                 }
             }
         }
@@ -2190,11 +2197,12 @@
             const data = {
                 type: 'playerVisibility',
                 playerID: this.myPlayerID,
+                visible: this.syncTarget ? Boolean(this.syncTarget.visible) : true,
                 visibleToOthers: this.showToOthers !== false
             };
 
             if (this.status === 'Hosting') {
-                this.receivePlayerVisibility(this.myPlayerID, data.visibleToOthers);
+                this.receivePlayerVisibility(this.myPlayerID, data.visible, data.visibleToOthers);
                 this.broadcast(data);
             } else {
                 const host = this.connections.get('Host');
@@ -2216,6 +2224,9 @@
             const visibleToOthers = this.showToOthers !== false;
             const backdrop = this.getCurrentBackdropName();
             const backdropNumber = this.getCurrentBackdropNumber();
+            const visibilityChanged = !this.lastSentPosition ||
+                this.lastSentPosition.visible !== visible ||
+                this.lastSentPosition.visibleToOthers !== visibleToOthers;
 
             if (!Number.isFinite(x) || !Number.isFinite(y)) return;
 
@@ -2259,6 +2270,9 @@
                     host.send(data);
                 }
             }
+
+            // Keep visibility on its own channel so it cannot be lost with position updates.
+            if (visibilityChanged) this.sendPlayerVisibility();
         }
 
         disconnect() {
