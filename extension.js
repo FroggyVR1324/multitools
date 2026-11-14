@@ -233,7 +233,11 @@
                 });
 
                 this.peer.on('error', error => {
-                    this.status = 'Error: ' + error.type;
+                    if (error.type === 'unavailable-id') {
+                        this.status = 'Room already exists! Choose a different room ID.';
+                    } else {
+                        this.status = 'Error: ' + error.type;
+                    }
                 });
 
                 this.peer.on('disconnected', () => {
