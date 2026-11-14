@@ -1009,6 +1009,26 @@
                 return;
             }
 
+            if (data.type === 'playerVisibility') {
+                const playerID = senderID === 'Host'
+                    ? Number(data.playerID)
+                    : this.peerToPlayerID.get(senderID);
+
+                if (playerID !== undefined && Number.isFinite(Number(playerID)) &&
+                    typeof data.visibleToOthers === 'boolean') {
+                    this.receivePlayerVisibility(playerID, data.visibleToOthers);
+
+                    if (this.status === 'Hosting') {
+                        this.broadcast({
+                            type: 'playerVisibility',
+                            playerID: Number(playerID),
+                            visibleToOthers: data.visibleToOthers
+                        }, senderID);
+                    }
+                }
+                return;
+            }
+
             if (data.type === 'position') {
                 const playerID = senderID === 'Host'
                     ? Number(data.playerID)
@@ -1368,6 +1388,25 @@
             return stage && Number.isInteger(stage.currentCostume)
                 ? stage.currentCostume + 1
                 : 0;
+        }
+
+        receivePlayerVisibility(playerID, visibleToOthers) {
+            const numericID = Number(playerID);
+            if (!Number.isFinite(numericID) || numericID <= 0 ||
+                typeof visibleToOthers !== 'boolean') return;
+
+            const position = this.positions.get(numericID) || {x: 0, y: 0};
+            position.visibleToOthers = visibleToOthers;
+            this.positions.set(numericID, position);
+            this.players.add(numericID);
+
+            if (numericID !== Number(this.myPlayerID)) {
+                const remoteSprite = this.ensureRemoteSprite(numericID);
+                if (remoteSprite) {
+                    const baseVisible = typeof position.visible === 'boolean' ? position.visible : true;
+                    remoteSprite.visible = baseVisible && visibleToOthers;
+                }
+            }
         }
 
         receivePosition(playerID, x, y, direction, size, visible, visibleToOthers, backdrop, backdropNumber) {
@@ -2039,12 +2078,12 @@
 
         hideMeForEveryoneElse() {
             this.showToOthers = false;
-            this.sendCurrentPosition();
+            this.sendPlayerVisibility();
         }
 
         showMeForEveryoneElse() {
             this.showToOthers = true;
-            this.sendCurrentPosition();
+            this.sendPlayerVisibility();
         }
 
         disablePositionSync() {
@@ -2124,6 +2163,25 @@
 
             if (this.status === 'Hosting') {
                 this.receiveCostume(this.myPlayerID, data.svg, data.rotationCenterX, data.rotationCenterY);
+                this.broadcast(data);
+            } else {
+                const host = this.connections.get('Host');
+                if (host && host.open) host.send(data);
+            }
+        }
+
+        sendPlayerVisibility() {
+            if (!this.myPlayerID ||
+                (this.status !== 'Hosting' && this.status !== 'Connected')) return;
+
+            const data = {
+                type: 'playerVisibility',
+                playerID: this.myPlayerID,
+                visibleToOthers: this.showToOthers !== false
+            };
+
+            if (this.status === 'Hosting') {
+                this.receivePlayerVisibility(this.myPlayerID, data.visibleToOthers);
                 this.broadcast(data);
             } else {
                 const host = this.connections.get('Host');
