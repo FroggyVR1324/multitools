@@ -41,6 +41,18 @@
             this.maxPlayers = 8;
             this.roomLocked = false;
 
+            // Each named list stores a separate array for every player ID.
+            this.playerLists = new Map();
+
+            // WebRTC transport counters (bytes) and one-second rate samples.
+            this.bandwidthSent = 0;
+            this.bandwidthReceived = 0;
+            this.uploadRate = 0;
+            this.downloadRate = 0;
+            this.bandwidthBaselines = new Map();
+            this.bandwidthTimer = null;
+            this.bandwidthSampling = false;
+
             this.peerJSLoading = null;
         }
         
@@ -110,6 +122,96 @@
                         opcode: 'hideDashboard',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'hide dashboard'
+                    },
+                    {
+                        opcode: 'createPlayerList',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'create player list with name [LIST]',
+                        arguments: {
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'}
+                        }
+                    },
+                    {
+                        opcode: 'addToPlayerList',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'add [ITEM] to player list [LIST]',
+                        arguments: {
+                            ITEM: {type: Scratch.ArgumentType.STRING, defaultValue: 'Sword'},
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'}
+                        }
+                    },
+                    {
+                        opcode: 'removeFromPlayerList',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'remove [ITEM] from player list [LIST]',
+                        arguments: {
+                            ITEM: {type: Scratch.ArgumentType.STRING, defaultValue: 'Sword'},
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'}
+                        }
+                    },
+                    {
+                        opcode: 'replacePlayerListItem',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'replace item [INDEX] of player list [LIST] with [ITEM]',
+                        arguments: {
+                            INDEX: {type: Scratch.ArgumentType.NUMBER, defaultValue: 1},
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'},
+                            ITEM: {type: Scratch.ArgumentType.STRING, defaultValue: 'Shield'}
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerListItem',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'item [INDEX] of player list [LIST]',
+                        arguments: {
+                            INDEX: {type: Scratch.ArgumentType.NUMBER, defaultValue: 1},
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'}
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerListLength',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'length of player list [LIST]',
+                        arguments: {
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'}
+                        }
+                    },
+                    {
+                        opcode: 'getPlayerListContents',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'contents of player list [LIST]',
+                        arguments: {
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'}
+                        }
+                    },
+                    {
+                        opcode: 'getOtherPlayerList',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'player [PLAYER] list [LIST]',
+                        arguments: {
+                            PLAYER: {type: Scratch.ArgumentType.NUMBER, defaultValue: 2},
+                            LIST: {type: Scratch.ArgumentType.STRING, defaultValue: 'Inventory'}
+                        }
+                    },
+                    {
+                        opcode: 'getBandwidthSent',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'total bytes sent'
+                    },
+                    {
+                        opcode: 'getBandwidthReceived',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'total bytes received'
+                    },
+                    {
+                        opcode: 'getUploadRate',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'upload speed (KB/s)'
+                    },
+                    {
+                        opcode: 'getDownloadRate',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'download speed (KB/s)'
                     },
 
                     {
@@ -247,6 +349,7 @@
                     this.status = 'Hosting';
                     this.updateSoloLobbyTimer();
                     this.updateDashboard();
+                    this.startBandwidthMonitor();
                     this.sendCurrentCostume();
                 });
 
@@ -297,6 +400,7 @@
 
                     connection.on('open', () => {
                         this.status = 'Connected';
+                        this.startBandwidthMonitor();
                         this.sendCurrentPosition();
                         this.sendCurrentCostume();
                     });
@@ -342,6 +446,9 @@
                 this.peerToPlayerID.set(peerID, playerID);
                 this.playerIDToPeer.set(playerID, peerID);
                 this.players.add(playerID);
+                for (const perPlayer of this.playerLists.values()) {
+                    perPlayer.set(playerID, []);
+                }
                 this.updateSoloLobbyTimer();
                 this.updateDashboard();
 
@@ -350,7 +457,13 @@
                     playerID: playerID,
                     hostID: 1,
                     players: Array.from(this.players),
-                    positions: Array.from(this.positions.entries())
+                    positions: Array.from(this.positions.entries()),
+                    playerLists: Object.fromEntries(
+                        Array.from(this.playerLists, ([name, perPlayer]) => [
+                            name,
+                            (perPlayer.get(playerID) || []).slice()
+                        ])
+                    )
                 });
 
                 // Send the costume snapshots already known by the host.
@@ -388,6 +501,9 @@
                     this.players.delete(playerID);
                     this.positions.delete(playerID);
                     this.costumes.delete(playerID);
+                    for (const perPlayer of this.playerLists.values()) {
+                        perPlayer.delete(playerID);
+                    }
                     this.removeRemoteSprite(playerID);
 
                     this.broadcast({
@@ -430,6 +546,14 @@
                 this.players.add(this.myPlayerID);
 
                 if (data.hostID) this.players.add(Number(data.hostID));
+
+                if (data.playerLists && typeof data.playerLists === 'object') {
+                    for (const [name, values] of Object.entries(data.playerLists)) {
+                        if (Array.isArray(values)) {
+                            this.playerLists.set(name, new Map([[this.myPlayerID, values.slice(0, 100).map(String)]]));
+                        }
+                    }
+                }
 
                 if (Array.isArray(data.positions)) {
                     data.positions.forEach(entry => {
@@ -506,6 +630,37 @@
                 return;
             }
 
+            if (data.type === 'playerListCreated') {
+                const name = String(data.name || '').slice(0, 64);
+                if (name && !this.playerLists.has(name)) {
+                    this.playerLists.set(name, new Map([[Number(this.myPlayerID), []]]));
+                }
+                return;
+            }
+
+            if (data.type === 'playerListSnapshot') {
+                const name = String(data.name || '').slice(0, 64);
+                if (name && Array.isArray(data.items)) {
+                    this.playerLists.set(name, new Map([[Number(this.myPlayerID), data.items.slice(0, 100).map(String)]]));
+                }
+                return;
+            }
+
+            if (data.type === 'playerListOperation' && this.status === 'Hosting') {
+                const playerID = this.peerToPlayerID.get(senderID);
+                if (playerID !== undefined) {
+                    this.applyPlayerListOperation(playerID, data.operation, data.name, data.item, data.index);
+                    const perPlayer = this.playerLists.get(String(data.name));
+                    const items = perPlayer ? (perPlayer.get(playerID) || []) : [];
+                    const connection = this.connections.get(senderID);
+                    if (connection && connection.open) {
+                        connection.send({type: 'playerListSnapshot', name: String(data.name), items: items.slice()});
+                    }
+                    this.updateDashboard();
+                }
+                return;
+            }
+
             if (data.type === 'playerJoined') {
                 this.players.add(Number(data.playerID));
                 this.lastJoinedPlayerID = Number(data.playerID);
@@ -519,6 +674,9 @@
 
             if (data.type === 'playerLeft') {
                 this.players.delete(Number(data.playerID));
+                for (const perPlayer of this.playerLists.values()) {
+                    perPlayer.delete(Number(data.playerID));
+                }
                 this.positions.delete(Number(data.playerID));
                 this.costumes.delete(Number(data.playerID));
                 this.removeRemoteSprite(data.playerID);
@@ -693,6 +851,29 @@
             this.dashboardStatus.className = 'mt-muted';
             panel.appendChild(this.dashboardStatus);
 
+            const listsHeading = document.createElement('h3');
+            listsHeading.textContent = 'Player Lists';
+            listsHeading.style.margin = '14px 0 6px';
+            panel.appendChild(listsHeading);
+            this.dashboardListPlayer = document.createElement('select');
+            this.dashboardListName = document.createElement('select');
+            this.dashboardListOutput = document.createElement('pre');
+            this.dashboardListOutput.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;background:#242735;padding:8px;border-radius:6px;max-height:130px;overflow:auto;';
+            this.dashboardListPlayer.addEventListener('change', () => this.updateDashboardListView());
+            this.dashboardListName.addEventListener('change', () => this.updateDashboardListView());
+            const listPickRow = document.createElement('div');
+            listPickRow.className = 'mt-row';
+            listPickRow.append(this.dashboardListPlayer, this.dashboardListName);
+            panel.append(listPickRow, this.dashboardListOutput);
+
+            const bandwidthHeading = document.createElement('h3');
+            bandwidthHeading.textContent = 'Bandwidth';
+            bandwidthHeading.style.margin = '14px 0 6px';
+            panel.appendChild(bandwidthHeading);
+            this.dashboardBandwidth = document.createElement('div');
+            this.dashboardBandwidth.className = 'mt-muted';
+            panel.appendChild(this.dashboardBandwidth);
+
             const playersHeading = document.createElement('h3');
             playersHeading.textContent = 'Players';
             playersHeading.style.margin = '14px 0 4px';
@@ -793,6 +974,36 @@
                 this.dashboardLimit.value = String(this.maxPlayers);
             }
             if (this.dashboardLock) this.dashboardLock.checked = this.roomLocked;
+            if (this.dashboardBandwidth) {
+                this.dashboardBandwidth.textContent =
+                    'Sent: ' + this.formatBytes(this.bandwidthSent) +
+                    ' • Received: ' + this.formatBytes(this.bandwidthReceived) +
+                    '\\nUpload: ' + this.uploadRate.toFixed(2) + ' KB/s' +
+                    ' • Download: ' + this.downloadRate.toFixed(2) + ' KB/s';
+            }
+            if (this.dashboardListPlayer && this.dashboardListName) {
+                const previousPlayer = this.dashboardListPlayer.value;
+                const previousList = this.dashboardListName.value;
+                this.dashboardListPlayer.textContent = '';
+                Array.from(this.players).sort((a, b) => Number(a) - Number(b)).forEach(id => {
+                    const option = document.createElement('option');
+                    option.value = String(id);
+                    option.textContent = 'Player ' + id;
+                    this.dashboardListPlayer.appendChild(option);
+                });
+                if (Array.from(this.players).some(id => String(id) === previousPlayer)) {
+                    this.dashboardListPlayer.value = previousPlayer;
+                }
+                this.dashboardListName.textContent = '';
+                for (const name of this.playerLists.keys()) {
+                    const option = document.createElement('option');
+                    option.value = name;
+                    option.textContent = name;
+                    this.dashboardListName.appendChild(option);
+                }
+                if (this.playerLists.has(previousList)) this.dashboardListName.value = previousList;
+                this.updateDashboardListView();
+            }
             if (this.dashboardPlayers) {
                 this.dashboardPlayers.textContent = '';
                 const ids = Array.from(this.players).sort((a, b) => Number(a) - Number(b));
@@ -820,6 +1031,17 @@
             }
         }
 
+        updateDashboardListView() {
+            if (!this.dashboardListOutput || !this.dashboardListName || !this.dashboardListPlayer) return;
+            const name = this.dashboardListName.value;
+            const playerID = Number(this.dashboardListPlayer.value);
+            const perPlayer = this.playerLists.get(name);
+            const items = perPlayer && perPlayer.get(playerID);
+            this.dashboardListOutput.textContent = name
+                ? (items ? JSON.stringify(items, null, 2) : 'No list data for this player yet.')
+                : 'No player lists created yet.';
+        }
+
         kickPlayer(playerID) {
             if (this.status !== 'Hosting' || Number(playerID) === 1) return;
             const peerID = this.playerIDToPeer.get(Number(playerID));
@@ -829,6 +1051,172 @@
             setTimeout(() => {
                 try { connection.close(); } catch (error) {}
             }, 100);
+        }
+
+        createPlayerList(args) {
+            if (this.status !== 'Hosting') return;
+            const name = String(args.LIST || '').trim().slice(0, 64);
+            if (!name || this.playerLists.has(name)) return;
+            const perPlayer = new Map();
+            for (const playerID of this.players) perPlayer.set(Number(playerID), []);
+            this.playerLists.set(name, perPlayer);
+            this.broadcast({type: 'playerListCreated', name: name});
+            this.updateDashboard();
+        }
+
+        applyPlayerListOperation(playerID, operation, listName, item, index) {
+            const name = String(listName || '').trim().slice(0, 64);
+            const perPlayer = this.playerLists.get(name);
+            if (!perPlayer) return false;
+            const id = Number(playerID);
+            if (!Number.isFinite(id) || !this.players.has(id)) return false;
+            let items = perPlayer.get(id);
+            if (!items) {
+                items = [];
+                perPlayer.set(id, items);
+            }
+            const value = String(item === undefined ? '' : item).slice(0, 500);
+            if (operation === 'add') {
+                if (items.length >= 100) return false;
+                items.push(value);
+            } else if (operation === 'remove') {
+                const at = items.indexOf(value);
+                if (at !== -1) items.splice(at, 1);
+            } else if (operation === 'replace') {
+                const at = Math.floor(Number(index)) - 1;
+                if (at >= 0 && at < items.length) items[at] = value;
+            } else {
+                return false;
+            }
+            return true;
+        }
+
+        modifyMyPlayerList(operation, name, item, index) {
+            const listName = String(name || '').trim().slice(0, 64);
+            if (!this.myPlayerID || !this.playerLists.has(listName)) return;
+            if (this.status === 'Hosting') {
+                this.applyPlayerListOperation(this.myPlayerID, operation, listName, item, index);
+                this.updateDashboard();
+            } else if (this.status === 'Connected') {
+                // Optimistic local update; host sends back its authoritative snapshot.
+                this.applyPlayerListOperation(this.myPlayerID, operation, listName, item, index);
+                const host = this.connections.get('Host');
+                if (host && host.open) {
+                    host.send({type: 'playerListOperation', operation: operation, name: listName, item: String(item), index: index});
+                }
+            }
+        }
+
+        addToPlayerList(args) {
+            this.modifyMyPlayerList('add', args.LIST, args.ITEM, 0);
+        }
+
+        removeFromPlayerList(args) {
+            this.modifyMyPlayerList('remove', args.LIST, args.ITEM, 0);
+        }
+
+        replacePlayerListItem(args) {
+            this.modifyMyPlayerList('replace', args.LIST, args.ITEM, args.INDEX);
+        }
+
+        getPlayerListItem(args) {
+            const perPlayer = this.playerLists.get(String(args.LIST));
+            const items = perPlayer && perPlayer.get(Number(this.myPlayerID));
+            const index = Math.floor(Number(args.INDEX)) - 1;
+            return items && index >= 0 && index < items.length ? items[index] : '';
+        }
+
+        getPlayerListLength(args) {
+            const perPlayer = this.playerLists.get(String(args.LIST));
+            const items = perPlayer && perPlayer.get(Number(this.myPlayerID));
+            return items ? items.length : 0;
+        }
+
+        getPlayerListContents(args) {
+            const perPlayer = this.playerLists.get(String(args.LIST));
+            const items = perPlayer && perPlayer.get(Number(this.myPlayerID));
+            return items ? JSON.stringify(items) : '[]';
+        }
+
+        getOtherPlayerList(args) {
+            if (this.status !== 'Hosting') return '[]';
+            const perPlayer = this.playerLists.get(String(args.LIST));
+            const items = perPlayer && perPlayer.get(Number(args.PLAYER));
+            return items ? JSON.stringify(items) : '[]';
+        }
+
+        startBandwidthMonitor() {
+            if (this.bandwidthTimer) return;
+            this.bandwidthTimer = setInterval(() => this.sampleBandwidth(), 1000);
+        }
+
+        async sampleBandwidth() {
+            if (this.bandwidthSampling) return;
+            this.bandwidthSampling = true;
+            let sentThisSecond = 0;
+            let receivedThisSecond = 0;
+            const active = new Set(this.connections.values());
+            try {
+                for (const connection of active) {
+                    const pc = connection && connection.peerConnection;
+                    if (!pc || typeof pc.getStats !== 'function') continue;
+                    try {
+                        const report = await pc.getStats();
+                        const stats = Array.from(report.values ? report.values() : []);
+                        let transport = stats.filter(stat => stat.type === 'transport' &&
+                            Number.isFinite(stat.bytesSent) && Number.isFinite(stat.bytesReceived));
+                        if (!transport.length) {
+                            transport = stats.filter(stat => stat.type === 'candidate-pair' &&
+                                stat.selected === true &&
+                                Number.isFinite(stat.bytesSent) && Number.isFinite(stat.bytesReceived));
+                        }
+                        const current = transport.reduce((totals, stat) => ({
+                            sent: totals.sent + stat.bytesSent,
+                            received: totals.received + stat.bytesReceived
+                        }), {sent: 0, received: 0});
+                        const previous = this.bandwidthBaselines.get(connection);
+                        if (previous) {
+                            sentThisSecond += Math.max(0, current.sent - previous.sent);
+                            receivedThisSecond += Math.max(0, current.received - previous.received);
+                        }
+                        this.bandwidthBaselines.set(connection, current);
+                    } catch (error) {
+                        // A connection may close while its stats are being read.
+                    }
+                }
+                for (const connection of this.bandwidthBaselines.keys()) {
+                    if (!active.has(connection)) this.bandwidthBaselines.delete(connection);
+                }
+                this.bandwidthSent += sentThisSecond;
+                this.bandwidthReceived += receivedThisSecond;
+                this.uploadRate = sentThisSecond / 1024;
+                this.downloadRate = receivedThisSecond / 1024;
+                this.updateDashboard();
+            } finally {
+                this.bandwidthSampling = false;
+            }
+        }
+
+        formatBytes(bytes) {
+            if (bytes < 1024) return bytes.toFixed(0) + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        getBandwidthSent() {
+            return Math.round(this.bandwidthSent);
+        }
+
+        getBandwidthReceived() {
+            return Math.round(this.bandwidthReceived);
+        }
+
+        getUploadRate() {
+            return Number(this.uploadRate.toFixed(2));
+        }
+
+        getDownloadRate() {
+            return Number(this.downloadRate.toFixed(2));
         }
 
         broadcast(data, exceptID) {
@@ -1047,6 +1435,16 @@
             this.connections.clear();
             this.players.clear();
             this.positions.clear();
+            this.playerLists.clear();
+            this.bandwidthBaselines.clear();
+            if (this.bandwidthTimer) {
+                clearInterval(this.bandwidthTimer);
+                this.bandwidthTimer = null;
+            }
+            this.bandwidthSent = 0;
+            this.bandwidthReceived = 0;
+            this.uploadRate = 0;
+            this.downloadRate = 0;
             this.peerToPlayerID.clear();
             this.playerIDToPeer.clear();
 
