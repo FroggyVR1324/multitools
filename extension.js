@@ -26,6 +26,8 @@
             this.playerIDToPeer = new Map();
 
             this.lastMessage = '';
+            this.lastPrivateMessage = '';
+            this.lastPrivateMessageSender = '';
             this.lastJoinedPlayerID = '';
             this.lastPositionPlayerID = '';
 
@@ -109,6 +111,15 @@
                                 type: Scratch.ArgumentType.STRING,
                                 defaultValue: 'Hello!'
                             }
+                        }
+                    },
+                    {
+                        opcode: 'sendPrivateMessage',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'send [MESSAGE] privately to player [ID]',
+                        arguments: {
+                            MESSAGE: {type: Scratch.ArgumentType.STRING, defaultValue: 'Hello!'},
+                            ID: {type: Scratch.ArgumentType.NUMBER, defaultValue: 2}
                         }
                     },
                     {
@@ -289,6 +300,12 @@
                         isEdgeActivated: false
                     },
                     {
+                        opcode: 'whenPrivateMessageReceived',
+                        blockType: Scratch.BlockType.EVENT,
+                        text: 'when private message received',
+                        isEdgeActivated: false
+                    },
+                    {
                         opcode: 'whenPlayerPositionUpdates',
                         blockType: Scratch.BlockType.EVENT,
                         text: 'when player position updates',
@@ -298,6 +315,16 @@
                         opcode: 'getMessage',
                         blockType: Scratch.BlockType.REPORTER,
                         text: 'received message'
+                    },
+                    {
+                        opcode: 'getPrivateMessage',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'received private message'
+                    },
+                    {
+                        opcode: 'getPrivateMessageSender',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'private message sender player ID'
                     },
                     {
                         opcode: 'getStatus',
@@ -927,6 +954,32 @@
                     this.broadcast(data, senderID);
                 }
 
+                return;
+            }
+
+            if (data.type === 'privateMessage' && this.status === 'Hosting') {
+                const senderPlayerID = this.peerToPlayerID.get(senderID);
+                const targetPlayerID = Number(data.targetPlayerID);
+                const message = String(data.message === undefined ? '' : data.message).slice(0, 1000);
+                if (senderPlayerID === undefined || !Number.isInteger(targetPlayerID) || !this.players.has(targetPlayerID)) return;
+
+                const packet = {type: 'privateMessage', senderPlayerID: senderPlayerID, message: message};
+                if (targetPlayerID === Number(this.myPlayerID)) {
+                    this.lastPrivateMessage = message;
+                    this.lastPrivateMessageSender = senderPlayerID;
+                    this.runtime.startHats('multitools_whenPrivateMessageReceived');
+                } else {
+                    const targetPeerID = this.playerIDToPeer.get(targetPlayerID);
+                    const targetConnection = targetPeerID && this.connections.get(targetPeerID);
+                    if (targetConnection && targetConnection.open) targetConnection.send(packet);
+                }
+                return;
+            }
+
+            if (data.type === 'privateMessage') {
+                this.lastPrivateMessage = String(data.message === undefined ? '' : data.message).slice(0, 1000);
+                this.lastPrivateMessageSender = Number(data.senderPlayerID) || '';
+                this.runtime.startHats('multitools_whenPrivateMessageReceived');
                 return;
             }
 
@@ -1908,6 +1961,40 @@
             }
         }
 
+        sendPrivateMessage(args) {
+            const targetPlayerID = Number(args.ID);
+            if (!Number.isInteger(targetPlayerID) || !this.players.has(targetPlayerID)) return;
+            const message = String(args.MESSAGE === undefined ? '' : args.MESSAGE).slice(0, 1000);
+
+            if (this.status === 'Hosting') {
+                if (targetPlayerID === Number(this.myPlayerID)) {
+                    this.lastPrivateMessage = message;
+                    this.lastPrivateMessageSender = Number(this.myPlayerID);
+                    this.runtime.startHats('multitools_whenPrivateMessageReceived');
+                    return;
+                }
+
+                const targetPeerID = this.playerIDToPeer.get(targetPlayerID);
+                const connection = targetPeerID && this.connections.get(targetPeerID);
+                if (connection && connection.open) {
+                    connection.send({
+                        type: 'privateMessage',
+                        senderPlayerID: Number(this.myPlayerID),
+                        message: message
+                    });
+                }
+            } else {
+                const host = this.connections.get('Host');
+                if (host && host.open) {
+                    host.send({
+                        type: 'privateMessage',
+                        targetPlayerID: targetPlayerID,
+                        message: message
+                    });
+                }
+            }
+        }
+
         enablePositionSync(args, util) {
             if (!util || !util.target || util.target.isStage) return;
 
@@ -2177,6 +2264,14 @@
 
         getMessage() {
             return this.lastMessage;
+        }
+
+        getPrivateMessage() {
+            return this.lastPrivateMessage;
+        }
+
+        getPrivateMessageSender() {
+            return this.lastPrivateMessageSender;
         }
 
         getStatus() {
