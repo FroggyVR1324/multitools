@@ -36,6 +36,11 @@
             this.costumeChangeHook = null;
             this.soloLobbyTimer = null;
 
+            this.dashboardElement = null;
+            this.dashboardVisible = false;
+            this.maxPlayers = 8;
+            this.roomLocked = false;
+
             this.peerJSLoading = null;
         }
         
@@ -95,6 +100,16 @@
                         opcode: 'disconnect',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'disconnect'
+                    },
+                    {
+                        opcode: 'showDashboard',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'show dashboard'
+                    },
+                    {
+                        opcode: 'hideDashboard',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'hide dashboard'
                     },
 
                     {
@@ -231,6 +246,7 @@
                     this.playerIDToPeer.set(1, id);
                     this.status = 'Hosting';
                     this.updateSoloLobbyTimer();
+                    this.updateDashboard();
                     this.sendCurrentCostume();
                 });
 
@@ -309,6 +325,16 @@
 
         handleHostConnection(connection) {
             connection.on('open', () => {
+                if (this.roomLocked || this.players.size >= this.maxPlayers) {
+                    if (connection.open) {
+                        connection.send({
+                            type: this.roomLocked ? 'serverLocked' : 'serverFull'
+                        });
+                        setTimeout(() => connection.close(), 100);
+                    }
+                    return;
+                }
+
                 const peerID = connection.peer;
                 const playerID = this.getNextPlayerID();
 
@@ -317,6 +343,7 @@
                 this.playerIDToPeer.set(playerID, peerID);
                 this.players.add(playerID);
                 this.updateSoloLobbyTimer();
+                this.updateDashboard();
 
                 connection.send({
                     type: 'welcome',
@@ -369,11 +396,33 @@
                     });
                 }
                 this.updateSoloLobbyTimer();
+                this.updateDashboard();
             });
         }
 
         handleData(data, senderID) {
             if (!data || typeof data !== 'object') return;
+
+            if (data.type === 'serverFull') {
+                this.status = 'Room is full';
+                this.disconnect();
+                this.status = 'Room is full';
+                return;
+            }
+
+            if (data.type === 'serverLocked') {
+                this.status = 'Room is locked';
+                this.disconnect();
+                this.status = 'Room is locked';
+                return;
+            }
+
+            if (data.type === 'kicked' || data.type === 'serverShutdown') {
+                const message = data.type === 'kicked' ? 'You were kicked by the host' : 'The host shut down the server';
+                this.disconnect();
+                this.status = message;
+                return;
+            }
 
             if (data.type === 'welcome') {
                 this.myPlayerID = Number(data.playerID);
@@ -604,6 +653,183 @@
             );
         }
 
+        showDashboard() {
+            if (this.status !== 'Hosting') {
+                this.status = 'Only the host can open the dashboard';
+                return;
+            }
+            this.createDashboard();
+            this.dashboardVisible = true;
+            this.dashboardElement.style.display = 'block';
+            this.updateDashboard();
+        }
+
+        hideDashboard() {
+            this.dashboardVisible = false;
+            if (this.dashboardElement) this.dashboardElement.style.display = 'none';
+        }
+
+        createDashboard() {
+            if (this.dashboardElement || !document.body) return;
+
+            const panel = document.createElement('div');
+            panel.id = 'multitools-host-dashboard';
+            panel.style.cssText = 'position:fixed;right:18px;top:18px;width:320px;max-height:80vh;overflow:auto;z-index:2147483647;background:#171923;color:#f7f7fb;border:1px solid #5865f2;border-radius:12px;padding:14px;font:14px Arial,sans-serif;box-shadow:0 8px 32px #0008;';
+            const style = document.createElement('style');
+            style.textContent = '#multitools-host-dashboard button{cursor:pointer;border:0;border-radius:6px;padding:6px 9px;background:#5865f2;color:white;font-weight:600}#multitools-host-dashboard input{box-sizing:border-box;max-width:100%;background:#242735;color:white;border:1px solid #555b70;border-radius:6px;padding:6px}#multitools-host-dashboard .mt-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}#multitools-host-dashboard .mt-muted{color:#aeb3c2;font-size:12px}#multitools-host-dashboard .mt-player{padding:7px 0;border-bottom:1px solid #343847}#multitools-host-dashboard .mt-danger{background:#c0394b}';
+            panel.appendChild(style);
+
+            const title = document.createElement('div');
+            title.className = 'mt-row';
+            const heading = document.createElement('strong');
+            heading.textContent = 'MultiTools • Host Dashboard';
+            const close = document.createElement('button');
+            close.textContent = 'Hide';
+            close.addEventListener('click', () => this.hideDashboard());
+            title.append(heading, close);
+            panel.appendChild(title);
+
+            this.dashboardStatus = document.createElement('div');
+            this.dashboardStatus.className = 'mt-muted';
+            panel.appendChild(this.dashboardStatus);
+
+            const playersHeading = document.createElement('h3');
+            playersHeading.textContent = 'Players';
+            playersHeading.style.margin = '14px 0 4px';
+            panel.appendChild(playersHeading);
+            this.dashboardPlayers = document.createElement('div');
+            panel.appendChild(this.dashboardPlayers);
+
+            const settingsHeading = document.createElement('h3');
+            settingsHeading.textContent = 'Server controls';
+            settingsHeading.style.margin = '14px 0 6px';
+            panel.appendChild(settingsHeading);
+
+            const limitRow = document.createElement('div');
+            limitRow.className = 'mt-row';
+            const limitLabel = document.createElement('label');
+            limitLabel.textContent = 'Maximum players';
+            this.dashboardLimit = document.createElement('input');
+            this.dashboardLimit.type = 'number';
+            this.dashboardLimit.min = '1';
+            this.dashboardLimit.max = '100';
+            this.dashboardLimit.value = String(this.maxPlayers);
+            this.dashboardLimit.style.width = '68px';
+            const saveLimit = document.createElement('button');
+            saveLimit.textContent = 'Set';
+            saveLimit.addEventListener('click', () => {
+                const value = Math.floor(Number(this.dashboardLimit.value));
+                if (!Number.isFinite(value) || value < 1) {
+                    this.dashboardLimit.value = String(this.maxPlayers);
+                    return;
+                }
+                this.maxPlayers = Math.min(100, value);
+                this.dashboardLimit.value = String(this.maxPlayers);
+                this.updateDashboard();
+            });
+            limitRow.append(limitLabel, this.dashboardLimit, saveLimit);
+            panel.appendChild(limitRow);
+
+            const lockRow = document.createElement('div');
+            lockRow.className = 'mt-row';
+            const lockLabel = document.createElement('label');
+            lockLabel.textContent = 'Lock room (block new joins)';
+            this.dashboardLock = document.createElement('input');
+            this.dashboardLock.type = 'checkbox';
+            this.dashboardLock.addEventListener('change', () => {
+                this.roomLocked = this.dashboardLock.checked;
+                this.updateDashboard();
+            });
+            lockRow.append(lockLabel, this.dashboardLock);
+            panel.appendChild(lockRow);
+
+            const messageHeading = document.createElement('h3');
+            messageHeading.textContent = 'Broadcast message';
+            messageHeading.style.margin = '14px 0 6px';
+            panel.appendChild(messageHeading);
+            const messageRow = document.createElement('div');
+            messageRow.className = 'mt-row';
+            this.dashboardMessage = document.createElement('input');
+            this.dashboardMessage.type = 'text';
+            this.dashboardMessage.placeholder = 'Message to everyone';
+            this.dashboardMessage.style.flex = '1';
+            const sendMessageButton = document.createElement('button');
+            sendMessageButton.textContent = 'Send';
+            sendMessageButton.addEventListener('click', () => {
+                const message = this.dashboardMessage.value.trim();
+                if (!message) return;
+                this.sendMessage({MESSAGE: '[HOST] ' + message});
+                this.dashboardMessage.value = '';
+            });
+            messageRow.append(this.dashboardMessage, sendMessageButton);
+            panel.appendChild(messageRow);
+
+            const shutdown = document.createElement('button');
+            shutdown.textContent = 'Shut down server';
+            shutdown.className = 'mt-danger';
+            shutdown.style.width = '100%';
+            shutdown.style.marginTop = '12px';
+            shutdown.addEventListener('click', () => {
+                if (!window.confirm('Shut down this server and disconnect all players?')) return;
+                this.broadcast({type: 'serverShutdown'});
+                this.disconnect();
+            });
+            panel.appendChild(shutdown);
+
+            document.body.appendChild(panel);
+            this.dashboardElement = panel;
+            this.dashboardElement.style.display = this.dashboardVisible ? 'block' : 'none';
+        }
+
+        updateDashboard() {
+            if (!this.dashboardElement) return;
+            if (this.dashboardStatus) {
+                this.dashboardStatus.textContent = 'Room: ' + (this.roomID || '—') +
+                    ' • Status: ' + this.status +
+                    ' • Players: ' + this.players.size + '/' + this.maxPlayers;
+            }
+            if (this.dashboardLimit && document.activeElement !== this.dashboardLimit) {
+                this.dashboardLimit.value = String(this.maxPlayers);
+            }
+            if (this.dashboardLock) this.dashboardLock.checked = this.roomLocked;
+            if (this.dashboardPlayers) {
+                this.dashboardPlayers.textContent = '';
+                const ids = Array.from(this.players).sort((a, b) => Number(a) - Number(b));
+                ids.forEach(playerID => {
+                    const row = document.createElement('div');
+                    row.className = 'mt-row mt-player';
+                    const name = document.createElement('span');
+                    name.textContent = 'Player ' + playerID + (Number(playerID) === 1 ? ' (Host)' : '');
+                    row.appendChild(name);
+                    if (Number(playerID) !== 1) {
+                        const kick = document.createElement('button');
+                        kick.textContent = 'Kick';
+                        kick.className = 'mt-danger';
+                        kick.addEventListener('click', () => this.kickPlayer(playerID));
+                        row.appendChild(kick);
+                    }
+                    this.dashboardPlayers.appendChild(row);
+                });
+                if (!ids.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'mt-muted';
+                    empty.textContent = 'No players connected';
+                    this.dashboardPlayers.appendChild(empty);
+                }
+            }
+        }
+
+        kickPlayer(playerID) {
+            if (this.status !== 'Hosting' || Number(playerID) === 1) return;
+            const peerID = this.playerIDToPeer.get(Number(playerID));
+            const connection = peerID && this.connections.get(peerID);
+            if (!connection) return;
+            if (connection.open) connection.send({type: 'kicked'});
+            setTimeout(() => {
+                try { connection.close(); } catch (error) {}
+            }, 100);
+        }
+
         broadcast(data, exceptID) {
             for (const [playerID, connection] of this.connections) {
                 if (playerID === exceptID) continue;
@@ -832,6 +1058,8 @@
             this.peer = null;
             this.roomID = '';
             this.peerID = '';
+            this.roomLocked = false;
+            this.updateDashboard();
             this.myPlayerID = '';
             this.status = 'Disconnected';
 
