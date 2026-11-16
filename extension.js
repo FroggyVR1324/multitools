@@ -14,7 +14,7 @@
             this.connections = new Map();
             this.players = new Set();
             this.positions = new Map();
-            this.remoteSprites = new Map();
+            this.remoteDrawables = new Map();
             this.remoteSkinIds = new Map();
             this.costumes = new Map();
 
@@ -815,7 +815,7 @@
                     for (const perPlayer of this.playerLists.values()) {
                         perPlayer.delete(playerID);
                     }
-                    this.removeRemoteSprite(playerID);
+                    this.removeRemoteDrawable(playerID);
 
                     this.renumberPlayers();
                 }
@@ -1174,7 +1174,7 @@
                 this.positions.delete(Number(data.playerID));
                 this.pingValues.delete(Number(data.playerID));
                 this.costumes.delete(Number(data.playerID));
-                this.removeRemoteSprite(data.playerID);
+                this.removeRemoteDrawable(data.playerID);
                 return;
             }
 
@@ -1221,7 +1221,7 @@
             this.positions = remapMap(this.positions);
             this.pingValues = remapMap(this.pingValues);
             this.costumes = remapMap(this.costumes);
-            this.remoteSprites = remapMap(this.remoteSprites);
+            this.remoteDrawables = remapMap(this.remoteDrawables);
             this.remoteSkinIds = remapMap(this.remoteSkinIds);
             for (const [name, perPlayer] of this.playerLists) {
                 this.playerLists.set(name, remapMap(perPlayer));
@@ -1254,7 +1254,7 @@
                 for (const [oldID, value] of source) {
                     const nextID = mapping[Number(oldID)];
                     if (nextID !== undefined) result.set(nextID, value);
-                    else if (source === this.remoteSprites) this.runtime.disposeTarget(value);
+                    else if (source === this.remoteDrawables) this.runtime.renderer.destroyDrawable(value);
                     else if (source === this.remoteSkinIds) this.runtime.renderer.destroySkin(value);
                 }
                 return result;
@@ -1266,7 +1266,7 @@
             this.positions = remapMap(this.positions);
             this.pingValues = remapMap(this.pingValues);
             this.costumes = remapMap(this.costumes);
-            this.remoteSprites = remapMap(this.remoteSprites);
+            this.remoteDrawables = remapMap(this.remoteDrawables);
             this.remoteSkinIds = remapMap(this.remoteSkinIds);
             for (const [name, perPlayer] of this.playerLists) {
                 this.playerLists.set(name, remapMap(perPlayer));
@@ -1299,31 +1299,90 @@
             }, 60 * 1000);
         }
 
-        ensureRemoteSprite(playerID) {
+        ensureRemoteDrawable(playerID) {
             const numericID = Number(playerID);
+            const renderer = this.runtime && this.runtime.renderer;
             if (!Number.isFinite(numericID) || numericID <= 0 ||
-                numericID === Number(this.myPlayerID) || !this.syncTarget) return null;
+                numericID === Number(this.myPlayerID) ||
+                !renderer || typeof renderer.createDrawable !== 'function') return null;
 
-            let remoteSprite = this.remoteSprites.get(numericID);
-            if (remoteSprite && !remoteSprite.isDisposed) return remoteSprite;
+            let drawableID = this.remoteDrawables.get(numericID);
+            if (drawableID !== undefined && drawableID !== null) return drawableID;
 
-            // Use this project's synced sprite as the visual template for now.
-            remoteSprite = this.syncTarget.makeClone();
-            if (!remoteSprite) return null;
+            // Remote players are renderer drawables, not Scratch clones/targets.
+            drawableID = renderer.createDrawable('sprite');
+            if (drawableID === null || drawableID === undefined) return null;
 
-            remoteSprite.visible = true;
-            this.runtime.addTarget(remoteSprite);
-            remoteSprite.goBehindOther(this.syncTarget);
-            this.remoteSprites.set(numericID, remoteSprite);
-            return remoteSprite;
+            this.remoteDrawables.set(numericID, drawableID);
+
+            // Keep remote players behind the local sprite, matching the old clone behaviour.
+            if (this.syncTarget && this.syncTarget.drawableID !== null &&
+                this.syncTarget.drawableID !== undefined &&
+                typeof renderer.setDrawableOrder === 'function') {
+                const localLayer = renderer.setDrawableOrder(
+                    this.syncTarget.drawableID, 0, 'sprite', true
+                );
+                if (localLayer !== null && localLayer !== undefined) {
+                    renderer.setDrawableOrder(drawableID, localLayer, 'sprite');
+                }
+            }
+
+            this.updateRemoteDrawable(numericID, drawableID);
+            return drawableID;
         }
 
-        applyRemoteCostume(playerID, remoteSprite) {
-            const costumeData = this.costumes.get(Number(playerID));
-            if (!costumeData || !remoteSprite || remoteSprite.drawableID === null || remoteSprite.drawableID === undefined) return;
+        updateRemoteDrawable(playerID, drawableID) {
+            const numericID = Number(playerID);
+            const renderer = this.runtime && this.runtime.renderer;
+            const position = this.positions.get(numericID);
+            if (!renderer || !position) return;
 
-            const renderer = this.runtime.renderer;
-            if (!renderer || typeof renderer.createSVGSkin !== 'function') return;
+            if (drawableID === undefined || drawableID === null) {
+                drawableID = this.remoteDrawables.get(numericID);
+            }
+            if (drawableID === undefined || drawableID === null) return;
+
+            if (typeof renderer.updateDrawablePosition === 'function') {
+                renderer.updateDrawablePosition(drawableID, [
+                    Number.isFinite(position.x) ? position.x : 0,
+                    Number.isFinite(position.y) ? position.y : 0
+                ]);
+            }
+
+            if (typeof renderer.updateDrawableDirectionScale === 'function') {
+                let direction = Number.isFinite(position.direction) ? position.direction : 90;
+                const size = Number.isFinite(position.size) ? position.size : 100;
+                let scale = [size, size];
+                const rotationStyle = this.syncTarget && this.syncTarget.rotationStyle;
+
+                if (rotationStyle === "don't rotate") {
+                    direction = 90;
+                } else if (rotationStyle === 'left-right') {
+                    direction = 90;
+                    scale = [(Number.isFinite(position.direction) && position.direction < 0 ? -1 : 1) * size, size];
+                }
+
+                renderer.updateDrawableDirectionScale(drawableID, direction, scale);
+            }
+
+            // Hiding a player means skipping its drawable, not hiding/deleting a clone.
+            if (typeof renderer.updateDrawableVisible === 'function') {
+                const visible = position.visible !== false && position.visibleToOthers !== false;
+                renderer.updateDrawableVisible(drawableID, visible);
+            }
+
+            if (this.runtime && typeof this.runtime.requestRedraw === 'function') {
+                this.runtime.requestRedraw();
+            }
+        }
+
+        applyRemoteCostume(playerID, drawableID) {
+            const numericID = Number(playerID);
+            const costumeData = this.costumes.get(numericID);
+            const renderer = this.runtime && this.runtime.renderer;
+            if (!costumeData || drawableID === null || drawableID === undefined ||
+                !renderer || typeof renderer.createSVGSkin !== 'function' ||
+                typeof renderer.updateDrawableSkinId !== 'function') return;
 
             const skinId = renderer.createSVGSkin(costumeData.svg, [
                 costumeData.rotationCenterX,
@@ -1331,13 +1390,15 @@
             ]);
             if (skinId === null || skinId === undefined) return;
 
-            renderer.updateDrawableSkinId(remoteSprite.drawableID, skinId);
-            remoteSprite.emitVisualChange();
-            this.runtime.requestRedraw();
+            renderer.updateDrawableSkinId(drawableID, skinId);
 
-            const oldSkinId = this.remoteSkinIds.get(Number(playerID));
-            this.remoteSkinIds.set(Number(playerID), skinId);
-            if (oldSkinId !== undefined) renderer.destroySkin(oldSkinId);
+            const oldSkinId = this.remoteSkinIds.get(numericID);
+            this.remoteSkinIds.set(numericID, skinId);
+            if (oldSkinId !== undefined && typeof renderer.destroySkin === 'function') {
+                renderer.destroySkin(oldSkinId);
+            }
+
+            this.updateRemoteDrawable(numericID, drawableID);
         }
 
         receiveCostume(playerID, svg, rotationCenterX, rotationCenterY) {
@@ -1353,22 +1414,30 @@
             this.costumes.set(numericID, costumeData);
             if (numericID === Number(this.myPlayerID)) return;
 
-            const remoteSprite = this.ensureRemoteSprite(numericID);
-            if (remoteSprite) this.applyRemoteCostume(numericID, remoteSprite);
+            const drawableID = this.ensureRemoteDrawable(numericID);
+            if (drawableID !== null) this.applyRemoteCostume(numericID, drawableID);
         }
 
-        removeRemoteSprite(playerID) {
+        removeRemoteDrawable(playerID) {
             const numericID = Number(playerID);
-            const remoteSprite = this.remoteSprites.get(numericID);
-            if (remoteSprite) {
-                this.runtime.disposeTarget(remoteSprite);
-                this.remoteSprites.delete(numericID);
+            const drawableID = this.remoteDrawables.get(numericID);
+            const renderer = this.runtime && this.runtime.renderer;
+            if (drawableID !== undefined && renderer &&
+                typeof renderer.destroyDrawable === 'function') {
+                renderer.destroyDrawable(drawableID);
+                this.remoteDrawables.delete(numericID);
             }
 
             const skinId = this.remoteSkinIds.get(numericID);
             if (skinId !== undefined) {
-                this.runtime.renderer.destroySkin(skinId);
+                if (renderer && typeof renderer.destroySkin === 'function') {
+                    renderer.destroySkin(skinId);
+                }
                 this.remoteSkinIds.delete(numericID);
+            }
+
+            if (this.runtime && typeof this.runtime.requestRedraw === 'function') {
+                this.runtime.requestRedraw();
             }
         }
 
@@ -1390,28 +1459,6 @@
                 : 0;
         }
 
-        setRemoteSpriteVisibility(remoteSprite, visible) {
-            if (!remoteSprite) return;
-            const isVisible = Boolean(visible);
-
-            // RenderedTarget.setVisible updates both VM state and its renderer drawable.
-            if (typeof remoteSprite.setVisible === 'function') {
-                remoteSprite.setVisible(isVisible);
-            } else {
-                remoteSprite.visible = isVisible;
-                const renderer = this.runtime && this.runtime.renderer;
-                if (renderer && remoteSprite.drawableID !== null &&
-                    remoteSprite.drawableID !== undefined &&
-                    typeof renderer.updateDrawableVisible === 'function') {
-                    renderer.updateDrawableVisible(remoteSprite.drawableID, isVisible);
-                }
-            }
-
-            if (this.runtime && typeof this.runtime.requestRedraw === 'function') {
-                this.runtime.requestRedraw();
-            }
-        }
-
         receivePlayerVisibility(playerID, visible, visibleToOthers) {
             const numericID = Number(playerID);
             if (!Number.isFinite(numericID) || numericID <= 0) return;
@@ -1423,12 +1470,8 @@
             this.players.add(numericID);
 
             if (numericID !== Number(this.myPlayerID)) {
-                const remoteSprite = this.ensureRemoteSprite(numericID);
-                if (remoteSprite) {
-                    const baseVisible = typeof position.visible === 'boolean' ? position.visible : true;
-                    const allowedForOthers = position.visibleToOthers !== false;
-                    this.setRemoteSpriteVisibility(remoteSprite, baseVisible && allowedForOthers);
-                }
+                const drawableID = this.ensureRemoteDrawable(numericID);
+                if (drawableID !== null) this.updateRemoteDrawable(numericID, drawableID);
             }
         }
 
@@ -1466,19 +1509,8 @@
             this.lastPositionPlayerID = numericID;
 
             if (numericID !== Number(this.myPlayerID)) {
-                const remoteSprite = this.ensureRemoteSprite(numericID);
-                if (remoteSprite) {
-                    remoteSprite.setXY(position.x, position.y);
-                    if (Number.isFinite(position.direction)) {
-                        remoteSprite.setDirection(position.direction);
-                    }
-                    if (Number.isFinite(position.size)) {
-                        remoteSprite.setSize(position.size);
-                    }
-                    const baseVisible = typeof position.visible === 'boolean' ? position.visible : true;
-                    const allowedForOthers = position.visibleToOthers !== false;
-                    this.setRemoteSpriteVisibility(remoteSprite, baseVisible && allowedForOthers);
-                }
+                const drawableID = this.ensureRemoteDrawable(numericID);
+                if (drawableID !== null) this.updateRemoteDrawable(numericID, drawableID);
             }
 
             this.runtime.startHats(
@@ -2064,22 +2096,10 @@
             // Recreate visible remote players after position sync is enabled.
             for (const [playerID, position] of this.positions) {
                 if (Number(playerID) === Number(this.myPlayerID)) continue;
-                const remoteSprite = this.ensureRemoteSprite(playerID);
-                if (remoteSprite) {
-                    remoteSprite.setXY(position.x, position.y);
-                    if (Number.isFinite(position.direction)) {
-                        remoteSprite.setDirection(position.direction);
-                    }
-                    if (Number.isFinite(position.size)) {
-                        remoteSprite.setSize(position.size);
-                    }
-                    if (typeof position.visible === 'boolean') {
-                        remoteSprite.visible = position.visible;
-                    }
-                    if (position.visibleToOthers === false) {
-                        remoteSprite.visible = false;
-                    }
-                    this.applyRemoteCostume(playerID, remoteSprite);
+                const drawableID = this.ensureRemoteDrawable(playerID);
+                if (drawableID !== null) {
+                    this.updateRemoteDrawable(playerID, drawableID);
+                    this.applyRemoteCostume(playerID, drawableID);
                 }
             }
 
@@ -2279,10 +2299,13 @@
             this.isDisconnecting = true;
             this.disablePositionSync();
 
-            for (const remoteSprite of this.remoteSprites.values()) {
-                this.runtime.disposeTarget(remoteSprite);
+            const renderer = this.runtime && this.runtime.renderer;
+            if (renderer && typeof renderer.destroyDrawable === 'function') {
+                for (const drawableID of this.remoteDrawables.values()) {
+                    renderer.destroyDrawable(drawableID);
+                }
             }
-            this.remoteSprites.clear();
+            this.remoteDrawables.clear();
 
             for (const skinId of this.remoteSkinIds.values()) {
                 this.runtime.renderer.destroySkin(skinId);
