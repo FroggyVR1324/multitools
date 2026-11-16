@@ -1315,20 +1315,25 @@
 
             this.remoteDrawables.set(numericID, drawableID);
 
-            // Keep remote players behind the local sprite, matching the old clone behaviour.
-            if (this.syncTarget && this.syncTarget.drawableID !== null &&
-                this.syncTarget.drawableID !== undefined &&
-                typeof renderer.setDrawableOrder === 'function') {
-                const localLayer = renderer.setDrawableOrder(
-                    this.syncTarget.drawableID, 0, 'sprite', true
-                );
-                if (localLayer !== null && localLayer !== undefined) {
-                    renderer.setDrawableOrder(drawableID, localLayer, 'sprite');
-                }
-            }
-
+            this.placeRemoteDrawableBehindLocal(drawableID);
             this.updateRemoteDrawable(numericID, drawableID);
             return drawableID;
+        }
+
+        placeRemoteDrawableBehindLocal(drawableID) {
+            const renderer = this.runtime && this.runtime.renderer;
+            if (!this.syncTarget || this.syncTarget.drawableID === null ||
+                this.syncTarget.drawableID === undefined || drawableID === null ||
+                drawableID === undefined || !renderer ||
+                typeof renderer.setDrawableOrder !== 'function') return;
+
+            // Match the old clone behaviour: remote players sit behind the local sprite.
+            const localLayer = renderer.setDrawableOrder(
+                this.syncTarget.drawableID, 0, 'sprite', true
+            );
+            if (localLayer !== null && localLayer !== undefined) {
+                renderer.setDrawableOrder(drawableID, localLayer, 'sprite');
+            }
         }
 
         updateRemoteDrawable(playerID, drawableID) {
@@ -2098,6 +2103,8 @@
                 if (Number(playerID) === Number(this.myPlayerID)) continue;
                 const drawableID = this.ensureRemoteDrawable(playerID);
                 if (drawableID !== null) {
+                    // Some remote drawables may have arrived before position sync was enabled.
+                    this.placeRemoteDrawableBehindLocal(drawableID);
                     this.updateRemoteDrawable(playerID, drawableID);
                     this.applyRemoteCostume(playerID, drawableID);
                 }
