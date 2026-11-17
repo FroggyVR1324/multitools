@@ -337,6 +337,24 @@
                         text: 'room ID'
                     },
                     {
+                        opcode: 'setGameID',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'set game ID to [ID]',
+                        arguments: {
+                            ID: {type: Scratch.ArgumentType.STRING, defaultValue: 'space-adventure-1324'}
+                        }
+                    },
+                    {
+                        opcode: 'generateGameID',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'generate new game ID'
+                    },
+                    {
+                        opcode: 'getGameID',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'game ID'
+                    },
+                    {
                         opcode: 'getMyPlayerID',
                         blockType: Scratch.BlockType.REPORTER,
                         text: 'my player ID'
@@ -2387,6 +2405,52 @@
 
         getPrivateMessageSender() {
             return this.lastPrivateMessageSender;
+        }
+
+        getGameIDVariable() {
+            const runtime = this.runtime;
+            const stage = runtime && (
+                typeof runtime.getTargetForStage === 'function'
+                    ? runtime.getTargetForStage()
+                    : (runtime.targets || []).find(target => target && target.isStage)
+            );
+            if (!stage) return null;
+
+            const variableId = '__multitools_game_id__';
+            let variable = stage.variables && stage.variables[variableId];
+            if (!variable && typeof stage.lookupOrCreateVariable === 'function') {
+                variable = stage.lookupOrCreateVariable(variableId, 'MultiTools Game ID');
+            } else if (!variable && typeof stage.createVariable === 'function') {
+                stage.createVariable(variableId, 'MultiTools Game ID', '');
+                variable = stage.variables && stage.variables[variableId];
+            }
+            return variable || null;
+        }
+
+        setGameID(args) {
+            const id = String(args && args.ID !== undefined ? args.ID : '').trim().slice(0, 100);
+            if (!id) return;
+            const variable = this.getGameIDVariable();
+            if (variable) variable.value = id;
+        }
+
+        generateGameID() {
+            const randomPart = window.crypto && typeof window.crypto.randomUUID === 'function'
+                ? window.crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+                : Math.random().toString(36).slice(2, 14);
+            const id = 'game-' + randomPart;
+            const variable = this.getGameIDVariable();
+            if (variable) variable.value = id;
+        }
+
+        getGameID() {
+            const variable = this.getGameIDVariable();
+            if (!variable) return '';
+            if (typeof variable.value !== 'string' || !variable.value.trim()) {
+                this.generateGameID();
+                return variable.value || '';
+            }
+            return variable.value;
         }
 
         getStatus() {
