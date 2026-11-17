@@ -976,10 +976,24 @@
                     : this.connections.get(senderID);
                 if (pending && pending.connection === connection) {
                     this.pendingPings.delete(id);
+                    const measuredPing = Math.max(0, Math.round(Date.now() - pending.sentAt));
                     this.pingValues.set(Number(pending.playerID), {
-                        ms: Math.max(0, Math.round(Date.now() - pending.sentAt)),
+                        ms: measuredPing,
                         updatedAt: Date.now()
                     });
+                    if (this.status === 'Hosting') {
+                        this.broadcast({type: 'playerPing', playerID: Number(pending.playerID), ms: measuredPing});
+                    }
+                }
+                return;
+            }
+
+            if (data.type === 'playerPing') {
+                const playerID = Number(data.playerID);
+                const ms = Number(data.ms);
+                if (Number.isInteger(playerID) && this.players.has(playerID) &&
+                    Number.isFinite(ms) && ms >= 0 && ms <= 60000) {
+                    this.pingValues.set(playerID, {ms: Math.round(ms), updatedAt: Date.now()});
                 }
                 return;
             }
@@ -1564,7 +1578,7 @@
         resolvePlayerID(value) {
             const input = String(value === undefined || value === null ? '' : value).trim();
             if (!input) return null;
-            const playerMatch = input.match(/^player\\s+(\\d+)$/i);
+            const playerMatch = input.match(/^player\s+(\d+)$/i);
             const numeric = playerMatch ? Number(playerMatch[1]) : Number(input);
             if (Number.isInteger(numeric) && this.players.has(numeric)) return numeric;
             return null;
