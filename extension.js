@@ -41,9 +41,6 @@
             this.migrationTimer = null;
             this.migrationInProgress = false;
             this.isDisconnecting = false;
-
-            this.dashboardElement = null;
-            this.dashboardVisible = false;
             this.maxPlayers = 8;
             this.roomLocked = false;
 
@@ -146,16 +143,6 @@
                         opcode: 'disconnect',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'disconnect'
-                    },
-                    {
-                        opcode: 'showDashboard',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'show dashboard'
-                    },
-                    {
-                        opcode: 'hideDashboard',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'hide dashboard'
                     },
                     {
                         opcode: 'setMyPlayerVariable',
@@ -282,10 +269,56 @@
                     {
                         opcode: 'getPlayerPing',
                         blockType: Scratch.BlockType.REPORTER,
-                        text: 'player [ID] ping (ms)',
+                        text: 'ping of player [PLAYER] (ms)',
                         arguments: {
-                            ID: {type: Scratch.ArgumentType.NUMBER, defaultValue: 2}
+                            PLAYER: {type: Scratch.ArgumentType.STRING, defaultValue: 'Player 2'}
                         }
+                    },
+                    {
+                        opcode: 'getConnectedPlayers',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'list of connected players'
+                    },
+                    {
+                        opcode: 'isHost',
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: 'is host?'
+                    },
+                    {
+                        opcode: 'getHostName',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'name of host'
+                    },
+                    {
+                        opcode: 'kickPlayer',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'kick player [PLAYER]',
+                        arguments: {
+                            PLAYER: {type: Scratch.ArgumentType.STRING, defaultValue: 'Player 2'}
+                        }
+                    },
+                    {
+                        opcode: 'setMaximumPlayers',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'set maximum players to [NUMBER]',
+                        arguments: {
+                            NUMBER: {type: Scratch.ArgumentType.NUMBER, defaultValue: 8}
+                        }
+                    },
+                    {
+                        opcode: 'lockRoom',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'lock room'
+                    },
+                    {
+                        opcode: 'unlockRoom',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'unlock room'
+                    },
+                    {
+                        opcode: 'shutdownServer',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'shut down server'
                     },
                     {
                         opcode: 'whenPlayerJoins',
@@ -522,7 +555,6 @@
                     this.playerIDToPeer.set(1, id);
                     this.status = 'Hosting';
                     this.updateSoloLobbyTimer();
-                    this.updateDashboard();
                     this.startBandwidthMonitor();
                     this.startPingMonitor();
                     this.sendCurrentCostume();
@@ -626,7 +658,6 @@
             } else {
                 this.reconnectToMigratedHost();
             }
-            this.updateDashboard();
         }
 
         promoteToHost() {
@@ -668,7 +699,6 @@
                     this.startPingMonitor();
                     this.sendCurrentCostume();
                     this.updateSoloLobbyTimer();
-                    this.updateDashboard();
                 });
                 peer.on('connection', connection => {
                     if (this.peer === peer) this.handleHostConnection(connection);
@@ -683,7 +713,6 @@
                         this.status = 'Host migration error: ' + (error && error.type || 'unknown');
                         this.migrationTimer = setTimeout(attempt, 1500);
                     }
-                    this.updateDashboard();
                 });
             };
 
@@ -719,7 +748,6 @@
                     this.startPingMonitor();
                     this.sendCurrentPosition();
                     this.sendCurrentCostume();
-                    this.updateDashboard();
                 });
                 connection.on('data', data => this.handleData(data, 'Host'));
                 connection.on('close', () => {
@@ -772,8 +800,6 @@
                     perPlayer.set(playerID, []);
                 }
                 this.updateSoloLobbyTimer();
-                this.updateDashboard();
-
                 connection.send({
                     type: 'welcome',
                     playerID: playerID,
@@ -838,7 +864,6 @@
                     this.renumberPlayers();
                 }
                 this.updateSoloLobbyTimer();
-                this.updateDashboard();
             });
         }
 
@@ -955,7 +980,6 @@
                         ms: Math.max(0, Math.round(Date.now() - pending.sentAt)),
                         updatedAt: Date.now()
                     });
-                    this.updateDashboard();
                 }
                 return;
             }
@@ -1145,7 +1169,6 @@
                         if (!this.playerLists.has(name)) this.playerLists.set(name, new Map());
                         this.playerLists.get(name).set(playerID, rawItems.slice(0, 100).map(item => String(item).slice(0, 500)));
                     }
-                    this.updateDashboard();
                 }
                 return;
             }
@@ -1160,7 +1183,6 @@
                     if (connection && connection.open) {
                         connection.send({type: 'playerListSnapshot', name: String(data.name), items: items.slice()});
                     }
-                    this.updateDashboard();
                 }
                 return;
             }
@@ -1254,7 +1276,6 @@
             for (const connection of this.connections.values()) {
                 if (connection.open) connection.send(update);
             }
-            this.updateDashboard();
         }
 
         applyPlayerIDMap(data) {
@@ -1295,7 +1316,6 @@
             if (mapping[Number(this.lastPositionPlayerID)] !== undefined) {
                 this.lastPositionPlayerID = mapping[Number(this.lastPositionPlayerID)];
             }
-            this.updateDashboard();
         }
 
         updateSoloLobbyTimer() {
@@ -1541,245 +1561,58 @@
             );
         }
 
-        showDashboard() {
-            if (this.status !== 'Hosting') {
-                this.status = 'Only the host can open the dashboard';
-                return;
-            }
-            this.createDashboard();
-            this.dashboardVisible = true;
-            this.dashboardElement.style.display = 'block';
-            this.updateDashboard();
+        resolvePlayerID(value) {
+            const input = String(value === undefined || value === null ? '' : value).trim();
+            if (!input) return null;
+            const playerMatch = input.match(/^player\\s+(\\d+)$/i);
+            const numeric = playerMatch ? Number(playerMatch[1]) : Number(input);
+            if (Number.isInteger(numeric) && this.players.has(numeric)) return numeric;
+            return null;
         }
 
-        hideDashboard() {
-            this.dashboardVisible = false;
-            if (this.dashboardElement) this.dashboardElement.style.display = 'none';
+        getConnectedPlayers() {
+            return JSON.stringify(Array.from(this.players)
+                .sort((a, b) => Number(a) - Number(b))
+                .map(id => 'Player ' + id));
         }
 
-        createDashboard() {
-            if (this.dashboardElement || !document.body) return;
-
-            const panel = document.createElement('div');
-            panel.id = 'multitools-host-dashboard';
-            panel.style.cssText = 'position:fixed;right:18px;top:18px;width:320px;max-height:80vh;overflow:auto;z-index:2147483647;background:#171923;color:#f7f7fb;border:1px solid #5865f2;border-radius:12px;padding:14px;font:14px Arial,sans-serif;box-shadow:0 8px 32px #0008;';
-            const style = document.createElement('style');
-            style.textContent = '#multitools-host-dashboard button{cursor:pointer;border:0;border-radius:6px;padding:6px 9px;background:#5865f2;color:white;font-weight:600}#multitools-host-dashboard input{box-sizing:border-box;max-width:100%;background:#242735;color:white;border:1px solid #555b70;border-radius:6px;padding:6px}#multitools-host-dashboard .mt-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}#multitools-host-dashboard .mt-muted{color:#aeb3c2;font-size:12px}#multitools-host-dashboard .mt-player{padding:7px 0;border-bottom:1px solid #343847}#multitools-host-dashboard .mt-danger{background:#c0394b}';
-            panel.appendChild(style);
-
-            const title = document.createElement('div');
-            title.className = 'mt-row';
-            const heading = document.createElement('strong');
-            heading.textContent = 'MultiTools • Host Dashboard';
-            const close = document.createElement('button');
-            close.textContent = 'Hide';
-            close.addEventListener('click', () => this.hideDashboard());
-            title.append(heading, close);
-            panel.appendChild(title);
-
-            this.dashboardStatus = document.createElement('div');
-            this.dashboardStatus.className = 'mt-muted';
-            panel.appendChild(this.dashboardStatus);
-
-            const listsHeading = document.createElement('h3');
-            listsHeading.textContent = 'Player Lists';
-            listsHeading.style.margin = '14px 0 6px';
-            panel.appendChild(listsHeading);
-            this.dashboardListPlayer = document.createElement('select');
-            this.dashboardListName = document.createElement('select');
-            this.dashboardListOutput = document.createElement('pre');
-            this.dashboardListOutput.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere;background:#242735;padding:8px;border-radius:6px;max-height:130px;overflow:auto;';
-            this.dashboardListPlayer.addEventListener('change', () => this.updateDashboardListView());
-            this.dashboardListName.addEventListener('change', () => this.updateDashboardListView());
-            const listPickRow = document.createElement('div');
-            listPickRow.className = 'mt-row';
-            listPickRow.append(this.dashboardListPlayer, this.dashboardListName);
-            panel.append(listPickRow, this.dashboardListOutput);
-
-            const bandwidthHeading = document.createElement('h3');
-            bandwidthHeading.textContent = 'Bandwidth';
-            bandwidthHeading.style.margin = '14px 0 6px';
-            panel.appendChild(bandwidthHeading);
-            this.dashboardBandwidth = document.createElement('div');
-            this.dashboardBandwidth.className = 'mt-muted';
-            panel.appendChild(this.dashboardBandwidth);
-
-            const playersHeading = document.createElement('h3');
-            playersHeading.textContent = 'Players';
-            playersHeading.style.margin = '14px 0 4px';
-            panel.appendChild(playersHeading);
-            this.dashboardPlayers = document.createElement('div');
-            panel.appendChild(this.dashboardPlayers);
-
-            const settingsHeading = document.createElement('h3');
-            settingsHeading.textContent = 'Server controls';
-            settingsHeading.style.margin = '14px 0 6px';
-            panel.appendChild(settingsHeading);
-
-            const limitRow = document.createElement('div');
-            limitRow.className = 'mt-row';
-            const limitLabel = document.createElement('label');
-            limitLabel.textContent = 'Maximum players';
-            this.dashboardLimit = document.createElement('input');
-            this.dashboardLimit.type = 'number';
-            this.dashboardLimit.min = '1';
-            this.dashboardLimit.max = '100';
-            this.dashboardLimit.value = String(this.maxPlayers);
-            this.dashboardLimit.style.width = '68px';
-            const saveLimit = document.createElement('button');
-            saveLimit.textContent = 'Set';
-            saveLimit.addEventListener('click', () => {
-                const value = Math.floor(Number(this.dashboardLimit.value));
-                if (!Number.isFinite(value) || value < 1) {
-                    this.dashboardLimit.value = String(this.maxPlayers);
-                    return;
-                }
-                this.maxPlayers = Math.min(100, value);
-                this.dashboardLimit.value = String(this.maxPlayers);
-                this.updateDashboard();
-            });
-            limitRow.append(limitLabel, this.dashboardLimit, saveLimit);
-            panel.appendChild(limitRow);
-
-            const lockRow = document.createElement('div');
-            lockRow.className = 'mt-row';
-            const lockLabel = document.createElement('label');
-            lockLabel.textContent = 'Lock room (block new joins)';
-            this.dashboardLock = document.createElement('input');
-            this.dashboardLock.type = 'checkbox';
-            this.dashboardLock.addEventListener('change', () => {
-                this.roomLocked = this.dashboardLock.checked;
-                this.updateDashboard();
-            });
-            lockRow.append(lockLabel, this.dashboardLock);
-            panel.appendChild(lockRow);
-
-            const messageHeading = document.createElement('h3');
-            messageHeading.textContent = 'Broadcast message';
-            messageHeading.style.margin = '14px 0 6px';
-            panel.appendChild(messageHeading);
-            const messageRow = document.createElement('div');
-            messageRow.className = 'mt-row';
-            this.dashboardMessage = document.createElement('input');
-            this.dashboardMessage.type = 'text';
-            this.dashboardMessage.placeholder = 'Message to everyone';
-            this.dashboardMessage.style.flex = '1';
-            const sendMessageButton = document.createElement('button');
-            sendMessageButton.textContent = 'Send';
-            sendMessageButton.addEventListener('click', () => {
-                const message = this.dashboardMessage.value.trim();
-                if (!message) return;
-                this.sendMessage({MESSAGE: '[HOST] ' + message});
-                this.dashboardMessage.value = '';
-            });
-            messageRow.append(this.dashboardMessage, sendMessageButton);
-            panel.appendChild(messageRow);
-
-            const shutdown = document.createElement('button');
-            shutdown.textContent = 'Shut down server';
-            shutdown.className = 'mt-danger';
-            shutdown.style.width = '100%';
-            shutdown.style.marginTop = '12px';
-            shutdown.addEventListener('click', () => {
-                if (!window.confirm('Shut down this server and disconnect all players?')) return;
-                this.broadcast({type: 'serverShutdown'});
-                this.roomLocked = true;
-                setTimeout(() => this.disconnect(), 250);
-            });
-            panel.appendChild(shutdown);
-
-            document.body.appendChild(panel);
-            this.dashboardElement = panel;
-            this.dashboardElement.style.display = this.dashboardVisible ? 'block' : 'none';
+        isHost() {
+            return this.status === 'Hosting';
         }
 
-        updateDashboard() {
-            if (!this.dashboardElement) return;
-            if (this.dashboardStatus) {
-                this.dashboardStatus.textContent = 'Room: ' + (this.roomID || '—') +
-                    ' • Status: ' + this.status +
-                    ' • Players: ' + this.players.size + '/' + this.maxPlayers;
-            }
-            if (this.dashboardLimit && document.activeElement !== this.dashboardLimit) {
-                this.dashboardLimit.value = String(this.maxPlayers);
-            }
-            if (this.dashboardLock) this.dashboardLock.checked = this.roomLocked;
-            if (this.dashboardBandwidth) {
-                this.dashboardBandwidth.textContent =
-                    'Sent: ' + this.formatBytes(this.bandwidthSent) +
-                    ' • Received: ' + this.formatBytes(this.bandwidthReceived) +
-                    '\\nUpload: ' + this.uploadRate.toFixed(2) + ' KB/s' +
-                    ' • Download: ' + this.downloadRate.toFixed(2) + ' KB/s';
-            }
-            if (this.dashboardListPlayer && this.dashboardListName) {
-                const previousPlayer = this.dashboardListPlayer.value;
-                const previousList = this.dashboardListName.value;
-                this.dashboardListPlayer.textContent = '';
-                Array.from(this.players).sort((a, b) => Number(a) - Number(b)).forEach(id => {
-                    const option = document.createElement('option');
-                    option.value = String(id);
-                    option.textContent = 'Player ' + id;
-                    this.dashboardListPlayer.appendChild(option);
-                });
-                if (Array.from(this.players).some(id => String(id) === previousPlayer)) {
-                    this.dashboardListPlayer.value = previousPlayer;
-                }
-                this.dashboardListName.textContent = '';
-                for (const name of this.playerLists.keys()) {
-                    const option = document.createElement('option');
-                    option.value = name;
-                    option.textContent = name;
-                    this.dashboardListName.appendChild(option);
-                }
-                if (this.playerLists.has(previousList)) this.dashboardListName.value = previousList;
-                this.updateDashboardListView();
-            }
-            if (this.dashboardPlayers) {
-                this.dashboardPlayers.textContent = '';
-                const ids = Array.from(this.players).sort((a, b) => Number(a) - Number(b));
-                ids.forEach(playerID => {
-                    const row = document.createElement('div');
-                    row.className = 'mt-row mt-player';
-                    const name = document.createElement('span');
-                    const ping = this.pingValues.get(Number(playerID));
-                    const pingFresh = ping && Date.now() - ping.updatedAt <= 6000;
-                    const pingLabel = Number(playerID) === 1
-                        ? ' • Local host'
-                        : ' • ' + (pingFresh ? ping.ms + ' ms' : 'Ping: —');
-                    name.textContent = 'Player ' + playerID + (Number(playerID) === 1 ? ' (Host)' : '') + pingLabel;
-                    row.appendChild(name);
-                    if (Number(playerID) !== 1) {
-                        const kick = document.createElement('button');
-                        kick.textContent = 'Kick';
-                        kick.className = 'mt-danger';
-                        kick.addEventListener('click', () => this.kickPlayer(playerID));
-                        row.appendChild(kick);
-                    }
-                    this.dashboardPlayers.appendChild(row);
-                });
-                if (!ids.length) {
-                    const empty = document.createElement('div');
-                    empty.className = 'mt-muted';
-                    empty.textContent = 'No players connected';
-                    this.dashboardPlayers.appendChild(empty);
-                }
-            }
+        getHostName() {
+            return this.players.has(1) ? 'Player 1' : '';
         }
 
-        updateDashboardListView() {
-            if (!this.dashboardListOutput || !this.dashboardListName || !this.dashboardListPlayer) return;
-            const name = this.dashboardListName.value;
-            const playerID = Number(this.dashboardListPlayer.value);
-            const perPlayer = this.playerLists.get(name);
-            const items = perPlayer && perPlayer.get(playerID);
-            this.dashboardListOutput.textContent = name
-                ? (items ? JSON.stringify(items, null, 2) : 'No list data for this player yet.')
-                : 'No player lists created yet.';
+        setMaximumPlayers(args) {
+            if (this.status !== 'Hosting') return;
+            const value = Math.floor(Number(args.NUMBER));
+            if (!Number.isFinite(value) || value < 1) return;
+            this.maxPlayers = Math.max(this.players.size, Math.min(100, value));
         }
 
-        kickPlayer(playerID) {
-            if (this.status !== 'Hosting' || Number(playerID) === 1) return;
-            const peerID = this.playerIDToPeer.get(Number(playerID));
+        lockRoom() {
+            if (this.status !== 'Hosting') return;
+            this.roomLocked = true;
+        }
+
+        unlockRoom() {
+            if (this.status !== 'Hosting') return;
+            this.roomLocked = false;
+        }
+
+        shutdownServer() {
+            if (this.status !== 'Hosting') return;
+            this.roomLocked = true;
+            this.broadcast({type: 'serverShutdown'});
+            setTimeout(() => this.disconnect(), 250);
+        }
+
+        kickPlayer(args) {
+            if (this.status !== 'Hosting') return;
+            const playerID = this.resolvePlayerID(args.PLAYER);
+            if (playerID === null || playerID === 1) return;
+            const peerID = this.playerIDToPeer.get(playerID);
             const connection = peerID && this.connections.get(peerID);
             if (!connection) return;
             if (connection.open) connection.send({type: 'kicked'});
@@ -1834,7 +1667,6 @@
             for (const playerID of this.players) perPlayer.set(Number(playerID), []);
             this.playerLists.set(name, perPlayer);
             this.broadcast({type: 'playerListCreated', name: name});
-            this.updateDashboard();
         }
 
         applyPlayerListOperation(playerID, operation, listName, item, index) {
@@ -1869,7 +1701,6 @@
             if (!this.myPlayerID || !this.playerLists.has(listName)) return;
             if (this.status === 'Hosting') {
                 this.applyPlayerListOperation(this.myPlayerID, operation, listName, item, index);
-                this.updateDashboard();
             } else if (this.status === 'Connected') {
                 // Optimistic local update; host sends back its authoritative snapshot.
                 this.applyPlayerListOperation(this.myPlayerID, operation, listName, item, index);
@@ -1937,7 +1768,6 @@
                 for (const [playerID, sample] of this.pingValues) {
                     if (now - sample.updatedAt > 6000) this.pingValues.delete(playerID);
                 }
-                this.updateDashboard();
             };
             sendPings();
             this.pingTimer = setInterval(sendPings, 2000);
@@ -1964,7 +1794,9 @@
         }
 
         getPlayerPing(args) {
-            const sample = this.pingValues.get(Number(args.ID));
+            const playerID = this.resolvePlayerID(args.PLAYER);
+            if (playerID === null) return 0;
+            const sample = this.pingValues.get(playerID);
             return sample && Date.now() - sample.updatedAt <= 6000 ? sample.ms : 0;
         }
 
@@ -2014,7 +1846,6 @@
                 this.bandwidthReceived += receivedThisSecond;
                 this.uploadRate = sentThisSecond / 1024;
                 this.downloadRate = receivedThisSecond / 1024;
-                this.updateDashboard();
             } finally {
                 this.bandwidthSampling = false;
             }
@@ -2386,11 +2217,8 @@
             this.roomID = '';
             this.peerID = '';
             this.roomLocked = false;
-            this.updateDashboard();
             this.myPlayerID = '';
             this.status = 'Disconnected';
-            this.updateDashboard();
-
             this.lastPositionPlayerID = '';
             this.lastJoinedPlayerID = '';
         }
