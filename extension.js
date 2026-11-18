@@ -19,6 +19,8 @@
             this.costumes = new Map();
 
             this.roomID = '';
+            this.roomGameID = '';
+            this.peerRoomID = '';
             this.status = 'Disconnected';
             this.peerID = '';
             this.myPlayerID = '';
@@ -527,6 +529,21 @@
             return this.peerJSLoading;
         }
 
+        getPeerRoomID(gameID, roomID) {
+            // Keep the PeerJS ID short and valid while namespacing it by both values.
+            const input = String(gameID) + '\u0000' + String(roomID);
+            let hashA = 2166136261;
+            let hashB = 0x9e3779b9;
+            for (let i = 0; i < input.length; i++) {
+                const code = input.charCodeAt(i);
+                hashA = Math.imul(hashA ^ code, 16777619);
+                hashB = Math.imul(hashB ^ (code + i), 2246822519);
+            }
+            return 'mt-' +
+                (hashA >>> 0).toString(16).padStart(8, '0') +
+                (hashB >>> 0).toString(16).padStart(8, '0');
+        }
+
         async createRoom(args) {
             await this.disconnect();
             this.isDisconnecting = false;
@@ -536,10 +553,13 @@
 
                 this.roomID = String(args.ID).trim();
                 if (!this.roomID) throw new Error('Enter a room ID.');
+                this.roomGameID = String(this.getGameID()).trim();
+                if (!this.roomGameID) throw new Error('Game ID is unavailable.');
+                this.peerRoomID = this.getPeerRoomID(this.roomGameID, this.roomID);
 
                 this.status = 'Connecting...';
 
-                const peerID = 'mt-room-' + this.roomID;
+                const peerID = this.peerRoomID;
 
                 this.peer = new window.Peer(peerID, {
                     debug: 1
@@ -589,6 +609,9 @@
 
                 this.roomID = String(args.ID).trim();
                 if (!this.roomID) throw new Error('Enter a room ID.');
+                this.roomGameID = String(this.getGameID()).trim();
+                if (!this.roomGameID) throw new Error('Game ID is unavailable.');
+                this.peerRoomID = this.getPeerRoomID(this.roomGameID, this.roomID);
 
                 this.status = 'Connecting...';
 
@@ -600,8 +623,8 @@
                     this.peerID = id;
 
                     const connection = this.peer.connect(
-                        'mt-room-' + this.roomID,
-                        { reliable: true }
+                        this.peerRoomID,
+                        { reliable: true, metadata: {gameID: this.roomGameID} }
                     );
 
                     this.connections.set('Host', connection);
@@ -686,7 +709,7 @@
 
             const attempt = () => {
                 if (!this.migrationInProgress || this.roomID !== roomID) return;
-                const peer = new window.Peer('mt-room-' + roomID, {debug: 1});
+                const peer = new window.Peer(this.peerRoomID, {debug: 1});
                 this.peer = peer;
                 peer.on('open', id => {
                     if (this.peer !== peer) return;
@@ -734,9 +757,12 @@
                     this.migrationTimer = setTimeout(attempt, 700);
                     return;
                 }
-                const connection = peer.connect('mt-room-' + roomID, {
+                const connection = peer.connect(this.peerRoomID, {
                     reliable: true,
-                    metadata: {previousPlayerID: Number(this.myPlayerID)}
+                    metadata: {
+                        previousPlayerID: Number(this.myPlayerID),
+                        gameID: this.roomGameID
+                    }
                 });
                 let settled = false;
                 connection.on('open', () => {
@@ -775,6 +801,15 @@
 
         handleHostConnection(connection) {
             connection.on('open', () => {
+                const requestedGameID = String(connection.metadata && connection.metadata.gameID || '');
+                if (!this.roomGameID || requestedGameID !== this.roomGameID) {
+                    if (connection.open) {
+                        connection.send({type: 'wrongGame', expectedGameID: this.roomGameID});
+                        setTimeout(() => connection.close(), 100);
+                    }
+                    return;
+                }
+
                 if (this.roomLocked || this.players.size >= this.maxPlayers) {
                     if (connection.open) {
                         connection.send({
@@ -802,6 +837,7 @@
                 this.updateSoloLobbyTimer();
                 connection.send({
                     type: 'welcome',
+                    gameID: this.roomGameID,
                     playerID: playerID,
                     hostID: 1,
                     players: Array.from(this.players),
@@ -870,6 +906,12 @@
         handleData(data, senderID) {
             if (!data || typeof data !== 'object') return;
 
+            if (data.type === 'wrongGame') {
+                this.disconnect();
+                this.status = 'Game ID mismatch — this lobby belongs to another game';
+                return;
+            }
+
             if (data.type === 'serverFull') {
                 this.status = 'Room is full';
                 this.disconnect();
@@ -892,6 +934,11 @@
             }
 
             if (data.type === 'welcome') {
+                if (String(data.gameID || '') !== this.roomGameID) {
+                    this.disconnect();
+                    this.status = 'Game ID mismatch — this lobby belongs to another game';
+                    return;
+                }
                 const previousPlayerID = Number(this.myPlayerID);
                 this.myPlayerID = Number(data.playerID);
                 this.players = new Set(data.players || []);
@@ -2229,6 +2276,8 @@
 
             this.peer = null;
             this.roomID = '';
+            this.roomGameID = '';
+            this.peerRoomID = '';
             this.peerID = '';
             this.roomLocked = false;
             this.myPlayerID = '';
